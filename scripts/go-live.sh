@@ -91,7 +91,7 @@ render_edge_config() {
 }
 
 preflight() {
-  for command in gh jq curl openssl keytool git node npm npx base64 sha256sum; do need "$command"; done
+  for command in gh jq curl openssl git node npm npx base64 sha256sum; do need "$command"; done
   assert_clean_main
   gh auth status >/dev/null
   latest_ci_success
@@ -222,6 +222,7 @@ provision() {
 
 configure_github() {
   preflight
+  command -v keytool >/dev/null 2>&1 || die "keytool is required only for Android signing. On Ubuntu run: sudo apt update && sudo apt install -y openjdk-17-jdk-headless"
   load_state
   [[ -n "${D1_DATABASE_ID:-}" && -n "${ACCESS_AUD:-}" && -n "${TURNSTILE_SITE_KEY:-}" ]] || die "Run provision first."
   prompt_secret CLOUDFLARE_API_TOKEN "Cloudflare API token"

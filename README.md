@@ -30,6 +30,13 @@ The integration test creates an isolated local D1 database and proves enrollment
 
 Production setup is driven by the guarded CLI. It refuses to proceed unless local `main` is clean and current, CI is green, GitHub and Cloudflare authentication work, and `constrovet.com` is already an active Cloudflare zone.
 
+On Ubuntu, install the Android signing utility before `configure-github`:
+
+```bash
+sudo apt update
+sudo apt install -y openjdk-17-jdk-headless
+```
+
 ```bash
 cd /home/taran/challanse-website
 git pull --ff-only
