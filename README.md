@@ -2,6 +2,8 @@
 
 Standalone static landing page for ChallanSe, a Constrovet field-receipt workflow.
 
+The included Barlow Condensed and DM Sans webfonts are distributed under the SIL Open Font License files in `assets/fonts/`.
+
 ## Local preview
 
 ```bash
