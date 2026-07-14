@@ -35,6 +35,16 @@ It aborts instead of overwriting a conflicting record. It does not create Challa
 
 The token needs Zone Read and DNS Edit for `constrovet.com`, plus Zone Edit if the zone has not yet been added. Select only the Constrovet account and domain when creating it.
 
+If zone creation returns `403`, the safest beginner route is:
+
+1. Open `https://dash.cloudflare.com`.
+2. Click **Add a domain** or **Onboard a domain**.
+3. Enter only `constrovet.com` and choose **Free**.
+4. Stop at the DNS review screen; do not change Namecheap nameservers.
+5. Rerun `./scripts/go-live.sh dns-onboard` so the CLI validates and completes the three preserved records.
+
+Alternatively, recreate the API token with **Account → Zone → Edit** and **Zone → DNS → Edit** permissions scoped to the Constrovet account. Never grant global account access when a narrower scope is available.
+
 ## Change Namecheap nameservers
 
 The CLI prints two Cloudflare nameservers. Copy them exactly.

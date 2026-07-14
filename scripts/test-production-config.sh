@@ -17,6 +17,8 @@ grep -Fq '34.102.192.38' scripts/go-live.sh
 grep -Fq 'tcbhagat.github.io' scripts/go-live.sh
 grep -Fq 'alt4.aspmx.l.google.com' scripts/go-live.sh
 grep -Fq 'DNS_ACCEPTED_AT' scripts/go-live.sh
+grep -Fq 'Cloudflare error details:' scripts/go-live.sh
+grep -Fq 'Account > Zone > Edit' scripts/go-live.sh
 if rg -I -g '!test-production-config.sh' '(gho_[A-Za-z0-9]+|sk_live_[A-Za-z0-9]+|CLOUDFLARE_API_TOKEN=.{12})' scripts apps; then
   echo "Potential committed credential detected." >&2
   exit 1

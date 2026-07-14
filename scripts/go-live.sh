@@ -47,11 +47,20 @@ wrangler() { npx --no-install wrangler "$@"; }
 cf() {
   local method="$1" path="$2" data="${3:-}" response
   if [[ -n "$data" ]]; then
-    response="$(curl -fsS -X "$method" "$CF_API$path" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H 'Content-Type: application/json' --data "$data")"
+    response="$(curl -sS -X "$method" "$CF_API$path" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H 'Content-Type: application/json' --data "$data")" || die "Could not connect to Cloudflare API."
   else
-    response="$(curl -fsS -X "$method" "$CF_API$path" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")"
+    response="$(curl -sS -X "$method" "$CF_API$path" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")" || die "Could not connect to Cloudflare API."
   fi
-  jq -e '.success == true' >/dev/null <<<"$response" || { jq '.errors' <<<"$response" >&2; die "Cloudflare API request failed: $method $path"; }
+  jq -e . >/dev/null 2>&1 <<<"$response" || die "Cloudflare returned an unreadable response for $method $path."
+  if ! jq -e '.success == true' >/dev/null <<<"$response"; then
+    printf 'Cloudflare error details:\n' >&2
+    jq -r '.errors[]? | "- Code \(.code // "unknown"): \(.message // "Unknown Cloudflare error")"' <<<"$response" >&2
+    if [[ "$method" == "POST" && "$path" == "/zones" ]]; then
+      printf '%s\n' 'The token cannot create this zone. Either add constrovet.com in the Cloudflare dashboard first, or create a token with Account > Zone > Edit and Zone > DNS > Edit permissions for the Constrovet account.' >&2
+      printf '%s\n' 'After the dashboard shows constrovet.com, rerun dns-onboard. Do not change Namecheap nameservers yet.' >&2
+    fi
+    die "Cloudflare API request failed: $method $path"
+  fi
   printf '%s' "$response"
 }
 cloudflare_login() {
