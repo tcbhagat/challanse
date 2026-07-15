@@ -162,8 +162,22 @@ jobs:
           CHALLANSE_KEYSTORE_PASSWORD: ${{ secrets.CHALLANSE_KEYSTORE_PASSWORD }}
           CHALLANSE_KEY_ALIAS: ${{ secrets.CHALLANSE_KEY_ALIAS }}
           CHALLANSE_KEY_PASSWORD: ${{ secrets.CHALLANSE_KEY_PASSWORD }}
+      - name: Verify signing identity and create release manifest
+        run: |
+          fingerprint="$(keytool -printcert -jarfile apps/mobile/android/app/build/outputs/apk/release/app-release.apk | sed -n 's/^[[:space:]]*SHA256:[[:space:]]*//p' | head -1 | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+          test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          apk_sha256="$(sha256sum apps/mobile/android/app/build/outputs/apk/release/app-release.apk | awk '{print $1}')"
+          jq -n --arg commit "$GITHUB_SHA" --arg run_id "$GITHUB_RUN_ID" --arg apk_sha256 "$apk_sha256" --arg signing_cert_sha256 "$fingerprint" \
+            '{schema_version:"1.0",commit_sha:$commit,workflow_run_id:$run_id,apk_sha256:$apk_sha256,signing_certificate_sha256:$signing_cert_sha256}' > release-manifest.json
+        env:
+          EXPECTED_FINGERPRINT: ${{ vars.CHALLANSE_SIGNING_CERT_SHA256 }}
       - uses: actions/upload-artifact@v7
         with:
           name: challanse-android-release
           path: apps/mobile/android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: challanse-release-manifest
+          path: release-manifest.json
           if-no-files-found: error

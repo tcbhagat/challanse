@@ -84,11 +84,6 @@ async function enrollDevice(request: Request, env: Env): Promise<Response> {
   ).bind(codeHash).first<{ site_id: string; device_name: string }>();
   if (!enrollment) return error(request, env, 410, 'ENROLLMENT_EXPIRED', 'Enrollment code is expired, invalid, or already used.');
 
-  const used = await env.DB.prepare(
-    `UPDATE enrollment_codes SET used_at = CURRENT_TIMESTAMP WHERE code_hash = ? AND used_at IS NULL AND expires_at > CURRENT_TIMESTAMP`,
-  ).bind(codeHash).run();
-  if (Number(used.meta.changes ?? 0) !== 1) return error(request, env, 409, 'ENROLLMENT_USED', 'Enrollment code has already been used.');
-
   const activeDevices = await env.DB.prepare(`SELECT COUNT(*) AS count FROM devices WHERE site_id = ? AND active = 1`)
     .bind(enrollment.site_id).first<{ count: number }>();
   if (Number(activeDevices?.count ?? 0) >= 5) return error(request, env, 409, 'DEVICE_LIMIT', 'The five-device pilot limit has been reached.');
@@ -96,9 +91,26 @@ async function enrollDevice(request: Request, env: Env): Promise<Response> {
   const deviceId = crypto.randomUUID();
   const token = randomToken();
   const tokenHash = await sha256Hex(`${token}:${env.DEVICE_TOKEN_PEPPER}`);
-  await env.DB.prepare(
-    `INSERT INTO devices (id, site_id, name, token_hash, app_version) VALUES (?, ?, ?, ?, ?)`,
-  ).bind(deviceId, enrollment.site_id, input.deviceName || enrollment.device_name, tokenHash, input.appVersion).run();
+  try {
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE enrollment_codes SET used_at = CURRENT_TIMESTAMP, used_by_device_id = ?
+         WHERE code_hash = ? AND used_at IS NULL AND expires_at > CURRENT_TIMESTAMP`,
+      ).bind(deviceId, codeHash),
+      env.DB.prepare(
+        `INSERT INTO devices (id, site_id, name, token_hash, app_version)
+         SELECT ?, site_id, ?, ?, ? FROM enrollment_codes
+         WHERE code_hash = ? AND used_by_device_id = ?`,
+      ).bind(deviceId, input.deviceName || enrollment.device_name, tokenHash, input.appVersion, codeHash, deviceId),
+    ]);
+  } catch (caught) {
+    if (caught instanceof Error && caught.message.includes('device_limit_reached')) {
+      return error(request, env, 409, 'DEVICE_LIMIT', 'The five-device pilot limit has been reached.');
+    }
+    throw caught;
+  }
+  const created = await env.DB.prepare(`SELECT id FROM devices WHERE id = ? LIMIT 1`).bind(deviceId).first<{ id: string }>();
+  if (!created) return error(request, env, 409, 'ENROLLMENT_USED', 'Enrollment code has already been used.');
   return json(request, env, { deviceId, deviceToken: token }, 201);
 }
 
@@ -435,11 +447,17 @@ async function consumeReceipts(batch: MessageBatch<ReceiptQueueMessage>, env: En
 }
 
 async function reconcileAndRetain(env: Env): Promise<void> {
+  const recovered = await env.DB.prepare(
+    `UPDATE receipts SET status = 'NEEDS_REVIEW', version = version + 1, updated_at = CURRENT_TIMESTAMP
+     WHERE status = 'RECEIVED' AND created_at < datetime('now', '-5 minutes') RETURNING id, site_id`,
+  ).all<{ id: string; site_id: string }>();
+  for (const receipt of recovered.results) {
+    await env.DB.prepare(
+      `INSERT INTO receipt_audits (id, receipt_id, site_id, event_type, actor, event_json)
+       VALUES (?, ?, ?, 'NEEDS_REVIEW', 'reconciliation', '{}')`,
+    ).bind(crypto.randomUUID(), receipt.id, receipt.site_id).run();
+  }
   await env.DB.batch([
-    env.DB.prepare(
-      `UPDATE receipts SET status = 'NEEDS_REVIEW', version = version + 1, updated_at = CURRENT_TIMESTAMP
-       WHERE status = 'RECEIVED' AND created_at < datetime('now', '-5 minutes')`,
-    ),
     env.DB.prepare(`DELETE FROM request_nonces WHERE expires_at < CURRENT_TIMESTAMP`),
     env.DB.prepare(`DELETE FROM request_limits WHERE expires_at < CURRENT_TIMESTAMP`),
   ]);
@@ -458,6 +476,8 @@ async function reconcileAndRetain(env: Env): Promise<void> {
   await env.DB.prepare(`DELETE FROM receipts WHERE created_at < datetime('now', '-${AUDIT_RETENTION_DAYS} days')`).run();
   await env.DB.prepare(`DELETE FROM operations_log WHERE created_at < datetime('now', '-${AUDIT_RETENTION_DAYS} days')`).run();
 }
+
+export const testable = { consumeReceipts, reconcileAndRetain };
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {

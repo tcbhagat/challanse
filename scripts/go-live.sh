@@ -347,6 +347,42 @@ github_turnstile_secret_exists() {
   [[ "$exists" == "true" ]]
 }
 
+github_environment_secret_exists() {
+  local name="$1" exists
+  exists="$(gh secret list --repo "$REPO" --env production --json name --jq "any(.[]; .name == \"$name\")" 2>/dev/null)" || return 1
+  [[ "$exists" == "true" ]]
+}
+
+github_environment_variable() {
+  local name="$1"
+  gh variable list --repo "$REPO" --env production --json name,value --jq ".[] | select(.name == \"$name\") | .value" 2>/dev/null
+}
+
+resolve_device_token_pepper() {
+  if github_environment_secret_exists DEVICE_TOKEN_PEPPER; then
+    printf '%s\n' 'Existing GitHub DEVICE_TOKEN_PEPPER retained; enrolled devices remain valid.' >&2
+    return
+  fi
+  openssl rand -hex 32
+}
+
+signing_fingerprint() {
+  local keystore="$1" password="$2"
+  keytool -list -v -keystore "$keystore" -alias challanse -storepass "$password" 2>/dev/null |
+    sed -n 's/^[[:space:]]*SHA256:[[:space:]]*//p' | head -1 | tr -d ':' | tr '[:lower:]' '[:upper:]'
+}
+
+validate_new_keystore_path() {
+  local keystore="$1" parent resolved_parent
+  [[ "$keystore" == *.jks ]] || die "Release keystore path must end in .jks."
+  [[ ! -e "$keystore" ]] || die "Refusing to overwrite an existing release keystore: $keystore"
+  parent="$(dirname "$keystore")"
+  [[ -d "$parent" ]] || die "Keystore parent directory does not exist: $parent"
+  resolved_parent="$(cd "$parent" && pwd -P)"
+  [[ "$resolved_parent" != "$ROOT" && "$resolved_parent" != "$ROOT"/* ]] || die "Release keystore must be stored outside the Git repository."
+  [[ "$(basename "$keystore")" =~ ^[A-Za-z0-9._-]+\.jks$ ]] || die "Keystore filename contains unsafe characters. Use letters, numbers, dots, dashes, or underscores."
+}
+
 rotate_turnstile_secret() {
   local sitekey="$1" rotated secret
   printf '%s\n' 'The existing Turnstile widget has no secret in GitHub because an earlier provisioning run stopped before completion.' >&2
@@ -442,37 +478,66 @@ configure_github() {
   prompt_secret CLOUDFLARE_API_TOKEN "Cloudflare API token"
   printf '%s' "$CLOUDFLARE_API_TOKEN" | gh secret set CLOUDFLARE_API_TOKEN --repo "$REPO" --env production
   printf '%s' "$CLOUDFLARE_ACCOUNT_ID" | gh secret set CLOUDFLARE_ACCOUNT_ID --repo "$REPO" --env production
-  local pepper keystore password password_confirm encoded
-  pepper="$(openssl rand -hex 32)"
-  printf '%s' "$pepper" | gh secret set DEVICE_TOKEN_PEPPER --repo "$REPO" --env production
-  read -r -p "Secure release-keystore path [${STATE_DIR}/challanse-release.jks]: " keystore
-  keystore="${keystore:-${STATE_DIR}/challanse-release.jks}"
+  local pepper keystore password password_confirm encoded fingerprint existing_fingerprint answer
+  pepper="$(resolve_device_token_pepper)"
+  if [[ -n "$pepper" ]]; then
+    printf '%s' "$pepper" | gh secret set DEVICE_TOKEN_PEPPER --repo "$REPO" --env production
+  fi
+  existing_fingerprint="$(github_environment_variable CHALLANSE_SIGNING_CERT_SHA256)"
+  load_state
+  if [[ -n "$existing_fingerprint" && -n "${SIGNING_CERT_SHA256:-}" && "$existing_fingerprint" == "$SIGNING_CERT_SHA256" ]]; then
+    printf 'Existing Android signing identity retained: %s\n' "$existing_fingerprint"
+    gh variable set PILOT_DEPLOY_ENABLED --repo "$REPO" --body false
+    unset pepper CLOUDFLARE_API_TOKEN
+    printf 'GitHub production secrets are configured; no credentials were rotated.\n'
+    return
+  fi
+  if github_environment_secret_exists CHALLANSE_KEYSTORE_BASE64; then
+    printf '%s\n' 'Existing signing secrets have no trusted local fingerprint. No production APK has been released, so rotate them before launch.'
+    read -r -p 'Type ROTATE SIGNING to create a fresh pre-release identity: ' answer
+    [[ "$answer" == "ROTATE SIGNING" ]] || die "Signing rotation cancelled; GitHub secrets were unchanged."
+  fi
+  keystore="${STATE_DIR}/challanse-release-$(date -u +%Y%m%dT%H%M%SZ).jks"
+  validate_new_keystore_path "$keystore"
+  printf 'New release keystore will be created outside the repository at: %s\n' "$keystore"
+  confirm "Create this new Android signing identity."
   read -r -s -p "Android keystore/key password: " password; printf '\n'
   read -r -s -p "Repeat Android password: " password_confirm; printf '\n'
   [[ -n "$password" && "$password" == "$password_confirm" ]] || die "Android passwords do not match."
-  if [[ ! -f "$keystore" ]]; then
-    keytool -genkeypair -v -keystore "$keystore" -alias challanse -keyalg RSA -keysize 4096 -validity 10000 -storepass "$password" -keypass "$password" -dname 'CN=ChallanSe, O=Constrovet, C=IN' >/dev/null
-    chmod 600 "$keystore"
-  fi
+  keytool -genkeypair -v -keystore "$keystore" -alias challanse -keyalg RSA -keysize 4096 -validity 10000 -storepass "$password" -keypass "$password" -dname 'CN=ChallanSe, O=Constrovet, C=IN' >/dev/null
+  chmod 600 "$keystore"
   keytool -list -keystore "$keystore" -alias challanse -storepass "$password" >/dev/null
+  fingerprint="$(signing_fingerprint "$keystore" "$password")"
+  [[ "$fingerprint" =~ ^[0-9A-F]{64}$ ]] || die "Could not read the signing certificate SHA-256 fingerprint."
   encoded="$(base64 -w0 "$keystore")"
   printf '%s' "$encoded" | gh secret set CHALLANSE_KEYSTORE_BASE64 --repo "$REPO" --env production
   printf '%s' "$password" | gh secret set CHALLANSE_KEYSTORE_PASSWORD --repo "$REPO" --env production
   printf '%s' challanse | gh secret set CHALLANSE_KEY_ALIAS --repo "$REPO" --env production
   printf '%s' "$password" | gh secret set CHALLANSE_KEY_PASSWORD --repo "$REPO" --env production
+  gh variable set CHALLANSE_SIGNING_CERT_SHA256 --repo "$REPO" --env production --body "$fingerprint"
+  save_state SIGNING_KEYSTORE_PATH "$keystore"
+  save_state SIGNING_CERT_SHA256 "$fingerprint"
   gh variable set PILOT_DEPLOY_ENABLED --repo "$REPO" --body false
   unset password password_confirm encoded pepper CLOUDFLARE_API_TOKEN
-  printf 'GitHub production secrets and Android signing are configured. Back up %s offline.\n' "$keystore"
+  printf 'GitHub production secrets and Android signing are configured.\nCertificate SHA-256: %s\nBack up %s offline.\n' "$fingerprint" "$keystore"
 }
 
 deploy() {
   preflight
-  local required_secrets required_variables run_id pending ids body
+  local required_secrets required_variables run_id pending ids body deployment_flag commit_sha confirmation github_fingerprint
   required_secrets='["CLOUDFLARE_ACCOUNT_ID","CLOUDFLARE_API_TOKEN","DEVICE_TOKEN_PEPPER","TURNSTILE_SECRET","CHALLANSE_KEYSTORE_BASE64","CHALLANSE_KEYSTORE_PASSWORD","CHALLANSE_KEY_ALIAS","CHALLANSE_KEY_PASSWORD"]'
-  required_variables='["CLOUDFLARE_D1_DATABASE_ID","CLOUDFLARE_ACCESS_TEAM_DOMAIN","CLOUDFLARE_ACCESS_AUD","TURNSTILE_SITE_KEY"]'
+  required_variables='["CLOUDFLARE_D1_DATABASE_ID","CLOUDFLARE_ACCESS_TEAM_DOMAIN","CLOUDFLARE_ACCESS_AUD","TURNSTILE_SITE_KEY","CHALLANSE_SIGNING_CERT_SHA256"]'
   jq -e --argjson required "$required_secrets" '($required - [.[].name]) | length == 0' >/dev/null < <(gh secret list --repo "$REPO" --env production --json name) || die "Required production secrets are missing."
   jq -e --argjson required "$required_variables" '($required - [.[].name]) | length == 0' >/dev/null < <(gh variable list --repo "$REPO" --env production --json name) || die "Required production variables are missing."
-  confirm "This will deploy production and build a signed APK."
+  deployment_flag="$(gh variable list --repo "$REPO" --json name,value --jq '.[] | select(.name == "PILOT_DEPLOY_ENABLED") | .value')"
+  [[ "$deployment_flag" == "false" ]] || die "PILOT_DEPLOY_ENABLED must be false before deployment. Run rollback-production.sh first."
+  load_state
+  github_fingerprint="$(github_environment_variable CHALLANSE_SIGNING_CERT_SHA256)"
+  [[ -n "${SIGNING_CERT_SHA256:-}" && "$github_fingerprint" == "$SIGNING_CERT_SHA256" ]] || die "Signing fingerprint is missing or inconsistent. Rerun configure-github."
+  commit_sha="$(git rev-parse HEAD)"
+  printf 'Production commit: %s\nSigning certificate SHA-256: %s\n' "$commit_sha" "$github_fingerprint"
+  read -r -p "Type DEPLOY $commit_sha to continue: " confirmation
+  [[ "$confirmation" == "DEPLOY $commit_sha" ]] || die "Deployment cancelled."
   gh variable set PILOT_DEPLOY_ENABLED --repo "$REPO" --body true
   trap 'gh variable set PILOT_DEPLOY_ENABLED --repo "$REPO" --body false >/dev/null 2>&1 || true' EXIT
   gh workflow run "$WORKFLOW" --repo "$REPO" --ref main
@@ -494,7 +559,56 @@ deploy() {
   gh variable set PILOT_DEPLOY_ENABLED --repo "$REPO" --body false
   trap - EXIT
   save_state LAST_DEPLOY_RUN_ID "$run_id"
+  save_state LAST_DEPLOY_COMMIT_SHA "$commit_sha"
   printf 'Production workflow completed successfully: https://github.com/%s/actions/runs/%s\n' "$REPO" "$run_id"
+}
+
+rotate_device_pepper() {
+  preflight
+  load_state
+  render_edge_config
+  local confirmation pepper
+  printf '%s\n' 'WARNING: This revokes every enrolled Android device. Each device must be enrolled again; locally queued receipts remain on the devices.'
+  read -r -p 'Type ROTATE DEVICE PEPPER to continue: ' confirmation
+  [[ "$confirmation" == "ROTATE DEVICE PEPPER" ]] || die "Device credential rotation cancelled."
+  wrangler d1 execute challanse-pilot --remote --config apps/edge/wrangler.generated.toml --command \
+    "UPDATE devices SET active = 0; INSERT INTO operations_log (id, event_type, detail_json) VALUES (lower(hex(randomblob(16))), 'DEVICE_PEPPER_ROTATION', '{\"allDevicesRevoked\":true}');"
+  pepper="$(openssl rand -hex 32)"
+  printf '%s' "$pepper" | gh secret set DEVICE_TOKEN_PEPPER --repo "$REPO" --env production
+  unset pepper CLOUDFLARE_API_TOKEN
+  printf 'Device pepper rotated and all cloud device credentials revoked. Re-enroll pilot devices before syncing.\n'
+}
+
+https_status() {
+  preflight
+  local landing api reviewer
+  landing="$(curl -sS --connect-timeout 10 --max-time 20 -o /dev/null -w '%{http_code}' https://challanse.constrovet.com/)" || die "Landing HTTPS certificate is not ready."
+  api="$(curl -sS --connect-timeout 10 --max-time 20 -o /dev/null -w '%{http_code}' https://api.challanse.constrovet.com/health)" || die "API HTTPS certificate is not ready."
+  reviewer="$(curl -sS --connect-timeout 10 --max-time 20 -o /dev/null -w '%{http_code}' https://review.challanse.constrovet.com/)" || die "Reviewer HTTPS certificate is not ready."
+  [[ "$landing" == "200" && "$api" == "200" && ( "$reviewer" == "302" || "$reviewer" == "403" ) ]] || die "HTTPS readiness failed: landing=$landing api=$api reviewer=$reviewer"
+  gh api --method PUT "repos/$REPO/pages" -F cname=challanse.constrovet.com -F build_type=workflow -F https_enforced=true >/dev/null
+  save_state PRODUCTION_HTTPS_ACCEPTED_AT "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'All ChallanSe HTTPS endpoints are ready and GitHub Pages HTTPS enforcement is enabled.\n'
+}
+
+assert_production_https_accepted() {
+  load_state
+  [[ -n "${PRODUCTION_HTTPS_ACCEPTED_AT:-}" ]] || die "Run ./scripts/go-live.sh https-status after the first successful deployment."
+}
+
+harden_github() {
+  preflight
+  local push_maintainers approvals body confirmation
+  push_maintainers="$(gh api "repos/$REPO/collaborators?affiliation=direct&per_page=100" --jq '[.[] | select(.permissions.push == true)] | length')"
+  approvals=0
+  if [[ "$push_maintainers" -ge 2 ]]; then approvals=1; fi
+  printf 'Branch protection will require pull requests, resolved conversations, strict CI, and administrator enforcement. Required approvals: %s\n' "$approvals"
+  [[ "$approvals" == "1" ]] || printf '%s\n' 'Only one push-capable maintainer is available, so independent review cannot yet be enforced.'
+  read -r -p 'Type HARDEN MAIN to apply these repository rules: ' confirmation
+  [[ "$confirmation" == "HARDEN MAIN" ]] || die "Branch protection unchanged."
+  body="$(jq -nc --argjson approvals "$approvals" '{required_status_checks:{strict:true,contexts:["validate","android"]},enforce_admins:true,required_pull_request_reviews:{dismiss_stale_reviews:true,require_code_owner_reviews:false,required_approving_review_count:$approvals,require_last_push_approval:false},restrictions:null,required_conversation_resolution:true,allow_force_pushes:false,allow_deletions:false}')"
+  gh api --method PUT "repos/$REPO/branches/main/protection" --input - <<<"$body" >/dev/null
+  printf 'Main branch protection hardened. Add a second maintainer to enforce one independent approval.\n'
 }
 
 seed() {
@@ -503,6 +617,7 @@ seed() {
   vendors_file="$2"; [[ -r "$vendors_file" ]] || die "Vendor file is not readable: $vendors_file"
   jq -e 'type == "array" and length >= 1 and length <= 4 and all(.[]; (.id|type=="string") and (.name|type=="string") and (.initials|type=="string") and (.color|test("^#[0-9A-Fa-f]{6}$")))' "$vendors_file" >/dev/null || die "Vendor JSON is invalid."
   preflight
+  assert_production_https_accepted
   load_state
   prompt_value SITE_ID "Site ID"
   prompt_value SITE_NAME "Site name"
@@ -559,8 +674,14 @@ download_apk() {
   [[ -n "$run_id" ]] || die "No successful production run was found."
   rm -rf "$output"; mkdir -p "$output"
   gh run download "$run_id" --repo "$REPO" --name challanse-android-release --dir "$output"
+  gh run download "$run_id" --repo "$REPO" --name challanse-release-manifest --dir "$output" || die "Release manifest artifact was not found."
   local apk; apk="$(find "$output" -type f -name '*.apk' -print -quit)"; [[ -n "$apk" ]] || die "APK artifact was not found."
-  sha256sum "$apk"
+  local actual expected
+  actual="$(sha256sum "$apk" | awk '{print $1}')"
+  expected="$(jq -r '.apk_sha256 // empty' "$output/release-manifest.json")"
+  [[ -n "$expected" && "$actual" == "$expected" ]] || die "APK checksum does not match the signed release manifest."
+  printf '%s  %s\n' "$actual" "$apk"
+  printf 'Verified release manifest: %s\n' "$output/release-manifest.json"
 }
 
 usage() {
@@ -572,7 +693,10 @@ Usage: scripts/go-live.sh <command>
   preflight
   provision
   configure-github
+  harden-github
   deploy
+  https-status
+  rotate-device-pepper
   seed --vendors-file /secure/challanse-vendors.json
   verify
   download-apk
@@ -587,7 +711,10 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     preflight) preflight ;;
     provision) provision ;;
     configure-github) configure_github ;;
+    harden-github) harden_github ;;
     deploy) deploy ;;
+    https-status) https_status ;;
+    rotate-device-pepper) rotate_device_pepper ;;
     seed) shift; seed "$@" ;;
     verify) verify ;;
     download-apk) download_apk ;;
