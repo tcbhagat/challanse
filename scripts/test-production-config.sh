@@ -24,11 +24,11 @@ grep -Fq 'Zone > Dynamic URL Redirects > Edit' scripts/go-live.sh
 grep -Fq 'https://www.constrovet.com/app/' scripts/go-live.sh
 grep -Fq 'APP REDIRECT OK' scripts/go-live.sh
 grep -Fq 'invalidate_immediately' scripts/go-live.sh
-turnstile_store_line="$(rg -n 'gh secret set TURNSTILE_SECRET' scripts/go-live.sh | cut -d: -f1)"
-access_lookup_line="$(rg -n 'access/organizations' scripts/go-live.sh | cut -d: -f1)"
+turnstile_store_line="$(grep -n 'gh secret set TURNSTILE_SECRET' scripts/go-live.sh | cut -d: -f1)"
+access_lookup_line="$(grep -n 'access/organizations' scripts/go-live.sh | cut -d: -f1)"
 [[ "$turnstile_store_line" -lt "$access_lookup_line" ]] || { echo "Turnstile secret must be stored before Access provisioning." >&2; exit 1; }
 bash scripts/test-turnstile-recovery.sh
-if rg -I -g '!test-production-config.sh' '(gho_[A-Za-z0-9]+|sk_live_[A-Za-z0-9]+|CLOUDFLARE_API_TOKEN=.{12})' scripts apps; then
+if grep -RIE --exclude='test-production-config.sh' '(gho_[A-Za-z0-9]+|sk_live_[A-Za-z0-9]+|CLOUDFLARE_API_TOKEN=.{12})' scripts apps; then
   echo "Potential committed credential detected." >&2
   exit 1
 fi
