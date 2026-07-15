@@ -4,7 +4,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 bash -n scripts/go-live.sh
 bash -n scripts/rollback-production.sh
-shellcheck -e SC1090 scripts/go-live.sh scripts/rollback-production.sh scripts/test-production-config.sh
+bash -n scripts/test-turnstile-recovery.sh
+shellcheck -e SC1090 scripts/go-live.sh scripts/rollback-production.sh scripts/test-production-config.sh scripts/test-turnstile-recovery.sh
 test -x scripts/go-live.sh
 test -x scripts/rollback-production.sh
 grep -Fq "VITE_API_BASE_URL: /api" .github/workflows/ci-pages.yml
@@ -22,6 +23,11 @@ grep -Fq 'Account > Zone > Edit' scripts/go-live.sh
 grep -Fq 'Zone > Dynamic URL Redirects > Edit' scripts/go-live.sh
 grep -Fq 'https://www.constrovet.com/app/' scripts/go-live.sh
 grep -Fq 'APP REDIRECT OK' scripts/go-live.sh
+grep -Fq 'invalidate_immediately' scripts/go-live.sh
+turnstile_store_line="$(rg -n 'gh secret set TURNSTILE_SECRET' scripts/go-live.sh | cut -d: -f1)"
+access_lookup_line="$(rg -n 'access/organizations' scripts/go-live.sh | cut -d: -f1)"
+[[ "$turnstile_store_line" -lt "$access_lookup_line" ]] || { echo "Turnstile secret must be stored before Access provisioning." >&2; exit 1; }
+bash scripts/test-turnstile-recovery.sh
 if rg -I -g '!test-production-config.sh' '(gho_[A-Za-z0-9]+|sk_live_[A-Za-z0-9]+|CLOUDFLARE_API_TOKEN=.{12})' scripts apps; then
   echo "Potential committed credential detected." >&2
   exit 1

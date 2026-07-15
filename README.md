@@ -51,7 +51,7 @@ git pull --ff-only
 ./scripts/go-live.sh deploy
 ```
 
-`dns-onboard` idempotently creates or reuses the Cloudflare zone, preserves `www` and the legacy Google MX record as DNS-only, and replaces the retired `app` origin with a proxied `301` redirect to `https://www.constrovet.com/app/`. It aborts on conflicts and prints the exact nameservers for the owner to enter manually. `provision` then creates D1, private R2, receipt and dead-letter queues, Turnstile, the reviewer Access application, and the landing DNS record. The CLI saves only non-secret state under `~/.config/challanse/`; credentials are held in memory or sent directly to GitHub environment secrets. It never changes Namecheap nameservers itself.
+`dns-onboard` idempotently creates or reuses the Cloudflare zone, preserves `www` and the legacy Google MX record as DNS-only, and replaces the retired `app` origin with a proxied `301` redirect to `https://www.constrovet.com/app/`. It aborts on conflicts and prints the exact nameservers for the owner to enter manually. `provision` then creates D1, private R2, receipt and dead-letter queues, Turnstile, the reviewer Access application, and the landing DNS record. If a first run stops after Turnstile creation, the next run retains an existing GitHub secret or explicitly confirms one API rotation before sending the replacement directly to GitHub. The CLI saves only non-secret state under `~/.config/challanse/`; credentials are held in memory or sent directly to GitHub environment secrets. It never changes Namecheap nameservers itself.
 
 Set `PILOT_DEPLOY_ENABLED` as a repository variable. Configure the GitHub `production` environment with required reviewer approval and the remaining values:
 

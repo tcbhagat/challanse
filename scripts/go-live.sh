@@ -341,6 +341,35 @@ ensure_landing_dns() {
   fi
 }
 
+github_turnstile_secret_exists() {
+  local exists
+  exists="$(gh secret list --repo "$REPO" --env production --json name --jq 'any(.[]; .name == "TURNSTILE_SECRET")' 2>/dev/null)" || return 1
+  [[ "$exists" == "true" ]]
+}
+
+rotate_turnstile_secret() {
+  local sitekey="$1" rotated secret
+  printf '%s\n' 'The existing Turnstile widget has no secret in GitHub because an earlier provisioning run stopped before completion.' >&2
+  confirm "Rotate this unused Turnstile secret once and send the replacement directly to the GitHub production environment."
+  rotated="$(cf POST "/accounts/$CLOUDFLARE_ACCOUNT_ID/challenges/widgets/$sitekey/rotate_secret" '{"invalidate_immediately":true}')"
+  secret="$(jq -r '.result.secret // empty' <<<"$rotated")"
+  [[ -n "$secret" ]] || die "Cloudflare rotated the Turnstile widget but did not return a replacement secret."
+  printf '%s' "$secret"
+}
+
+resolve_turnstile_secret() {
+  local sitekey="$1" returned_secret="$2"
+  if [[ -n "$returned_secret" ]]; then
+    printf '%s' "$returned_secret"
+    return
+  fi
+  if github_turnstile_secret_exists; then
+    printf '%s\n' 'Existing GitHub TURNSTILE_SECRET retained; no rotation performed.' >&2
+    return
+  fi
+  rotate_turnstile_secret "$sitekey"
+}
+
 provision() {
   preflight
   prompt_value REVIEWER_EMAIL_1 "Primary reviewer email"
@@ -363,7 +392,11 @@ provision() {
   turnstile_sitekey="$(jq -r '.sitekey // empty' <<<"$widget")"
   turnstile_secret="$(jq -r '.secret // empty' <<<"$widget")"
   [[ -n "$turnstile_sitekey" ]] || die "Turnstile site key was not returned."
-  [[ -n "$turnstile_secret" ]] || die "Existing Turnstile secret is not retrievable. Rotate it in Cloudflare, then rerun provision."
+  turnstile_secret="$(resolve_turnstile_secret "$turnstile_sitekey" "$turnstile_secret")"
+  if [[ -n "$turnstile_secret" ]]; then
+    printf '%s' "$turnstile_secret" | gh secret set TURNSTILE_SECRET --repo "$REPO" --env production
+    unset turnstile_secret
+  fi
 
   organization="$(cf GET "/accounts/$CLOUDFLARE_ACCOUNT_ID/access/organizations")"
   access_domain="$(jq -r '.result.auth_domain // empty' <<<"$organization")"
@@ -386,7 +419,6 @@ provision() {
   save_state REVIEWER_EMAIL_1 "$REVIEWER_EMAIL_1"
   save_state REVIEWER_EMAIL_2 "$REVIEWER_EMAIL_2"
 
-  printf '%s' "$turnstile_secret" | gh secret set TURNSTILE_SECRET --repo "$REPO" --env production
   gh variable set CLOUDFLARE_D1_DATABASE_ID --repo "$REPO" --env production --body "$D1_DATABASE_ID"
   gh variable set CLOUDFLARE_ACCESS_TEAM_DOMAIN --repo "$REPO" --env production --body "$access_domain"
   gh variable set CLOUDFLARE_ACCESS_AUD --repo "$REPO" --env production --body "$access_aud"
@@ -547,17 +579,19 @@ Usage: scripts/go-live.sh <command>
 USAGE
 }
 
-case "${1:-}" in
-  dns-onboard) dns_onboard ;;
-  dns-status) dns_status ;;
-  dns-accept) dns_accept ;;
-  preflight) preflight ;;
-  provision) provision ;;
-  configure-github) configure_github ;;
-  deploy) deploy ;;
-  seed) shift; seed "$@" ;;
-  verify) verify ;;
-  download-apk) download_apk ;;
-  help|-h|--help|'') usage ;;
-  *) usage >&2; exit 1 ;;
-esac
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  case "${1:-}" in
+    dns-onboard) dns_onboard ;;
+    dns-status) dns_status ;;
+    dns-accept) dns_accept ;;
+    preflight) preflight ;;
+    provision) provision ;;
+    configure-github) configure_github ;;
+    deploy) deploy ;;
+    seed) shift; seed "$@" ;;
+    verify) verify ;;
+    download-apk) download_apk ;;
+    help|-h|--help|'') usage ;;
+    *) usage >&2; exit 1 ;;
+  esac
+fi
