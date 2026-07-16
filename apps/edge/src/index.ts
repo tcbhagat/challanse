@@ -18,6 +18,8 @@ import {
   sha256Hex,
 } from './security';
 import type { DeviceIdentity, Env, ReceiptQueueMessage, ReviewerIdentity } from './types';
+import { completeUploadSession, createUploadSession, getUploadSession, putUploadPart } from './resumableUploads';
+import { dispatchEnrichment, enrichmentCallback, internalReceiptImage } from './enrichment';
 
 const MAX_PAGE_SIZE = 50;
 const IMAGE_RETENTION_DAYS = 90;
@@ -239,14 +241,16 @@ async function listReceipts(request: Request, env: Env, reviewer: ReviewerIdenti
   const cursor = url.searchParams.get('cursor') ?? '9999-12-31 23:59:59';
   const result = await env.DB.prepare(
     `SELECT r.id, r.vendor_id, v.name AS vendor_name, r.captured_at_unix, r.captured_quantity, r.status, r.version,
-            r.challan_number, r.material_description, r.verified_quantity, r.unit, r.notes, r.created_at
+            r.challan_number, r.material_description, r.verified_quantity, r.unit, r.notes, r.created_at,
+            r.enrichment_status, r.ocr_confidence, r.raw_ocr_json, r.gst_status
        FROM receipts r JOIN vendors v ON v.id = r.vendor_id
       WHERE r.site_id = ? AND r.status = ? AND r.created_at < ?
       ORDER BY r.created_at DESC LIMIT ?`,
   ).bind(reviewer.siteId, status, cursor, limit + 1).all<{
     id: string; vendor_id: string; vendor_name: string; captured_at_unix: number; captured_quantity: number;
     status: ReceiptListItem['status']; version: number; challan_number: string; material_description: string;
-    verified_quantity: number | null; unit: string; notes: string; created_at: string;
+    verified_quantity: number | null; unit: string; notes: string; created_at: string; enrichment_status: string;
+    ocr_confidence: number | null; raw_ocr_json: string; gst_status: string;
   }>();
   const hasMore = result.results.length > limit;
   const rows = result.results.slice(0, limit);
@@ -264,6 +268,10 @@ async function listReceipts(request: Request, env: Env, reviewer: ReviewerIdenti
     verifiedQuantity: row.verified_quantity,
     unit: row.unit,
     notes: row.notes,
+    enrichmentStatus: row.enrichment_status,
+    ocrConfidence: row.ocr_confidence,
+    rawOcrJson: JSON.parse(row.raw_ocr_json) as Record<string, unknown>,
+    gstStatus: row.gst_status,
   }));
   return json(request, env, { receipts, nextCursor: hasMore ? rows.at(-1)?.created_at ?? null : null });
 }
@@ -399,12 +407,40 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   }
   if (request.method === 'POST' && path === '/v1/pilot-requests') return submitPilotRequest(request, env);
   if (request.method === 'POST' && path === '/v1/devices/enroll') return enrollDevice(request, env);
+  const internalImageMatch = path.match(/^\/v1\/internal\/receipts\/([^/]+)\/image$/);
+  if (request.method === 'GET' && internalImageMatch) return internalReceiptImage(request, env, internalImageMatch[1]);
+  const callbackMatch = path.match(/^\/v1\/internal\/receipts\/([^/]+)\/enrichment$/);
+  if (request.method === 'POST' && callbackMatch) return enrichmentCallback(request, env, callbackMatch[1]);
 
   if (path === '/v1/mobile/bootstrap' || path === '/v1/receipts') {
     const device = await requireDevice(request, env);
     if (device instanceof Response) return device;
     if (request.method === 'GET' && path === '/v1/mobile/bootstrap') return mobileBootstrap(request, env, device);
     if (request.method === 'POST' && path === '/v1/receipts') return uploadReceipt(request, env, device);
+  }
+
+  if (path === '/v1/uploads' && request.method === 'POST') {
+    const device = await requireDevice(request, env);
+    if (device instanceof Response) return device;
+    return createUploadSession(request, env, device);
+  }
+  const uploadMatch = path.match(/^\/v1\/uploads\/([^/]+)$/);
+  if (uploadMatch && request.method === 'GET') {
+    const device = await requireDevice(request, env);
+    if (device instanceof Response) return device;
+    return getUploadSession(request, env, device, uploadMatch[1]);
+  }
+  const uploadPartMatch = path.match(/^\/v1\/uploads\/([^/]+)\/parts\/(\d+)$/);
+  if (uploadPartMatch && request.method === 'PUT') {
+    const device = await requireDevice(request, env);
+    if (device instanceof Response) return device;
+    return putUploadPart(request, env, device, uploadPartMatch[1], Number(uploadPartMatch[2]));
+  }
+  const uploadCompleteMatch = path.match(/^\/v1\/uploads\/([^/]+)\/complete$/);
+  if (uploadCompleteMatch && request.method === 'POST') {
+    const device = await requireDevice(request, env);
+    if (device instanceof Response) return device;
+    return completeUploadSession(request, env, device, uploadCompleteMatch[1]);
   }
 
   if (path.startsWith('/v1/reviewer/') || path.startsWith('/v1/admin/')) {
@@ -427,8 +463,12 @@ async function consumeReceipts(batch: MessageBatch<ReceiptQueueMessage>, env: En
   for (const message of batch.messages) {
     const { receiptId, siteId } = message.body;
     try {
-      const receipt = await env.DB.prepare(`SELECT image_key FROM receipts WHERE id = ? AND site_id = ? LIMIT 1`)
-        .bind(receiptId, siteId).first<{ image_key: string }>();
+      const receipt = await env.DB.prepare(
+        `SELECT image_key, enrichment_status, vendor_id, captured_at_unix, captured_quantity
+         FROM receipts WHERE id = ? AND site_id = ? LIMIT 1`,
+      ).bind(receiptId, siteId).first<{
+        image_key: string; enrichment_status: string; vendor_id: string; captured_at_unix: number; captured_quantity: number;
+      }>();
       if (!receipt || !(await env.RECEIPTS.head(receipt.image_key))) throw new Error('durable_image_missing');
       const result = await env.DB.prepare(
         `UPDATE receipts SET status = 'NEEDS_REVIEW', version = version + 1, updated_at = CURRENT_TIMESTAMP
@@ -438,6 +478,19 @@ async function consumeReceipts(batch: MessageBatch<ReceiptQueueMessage>, env: En
         await env.DB.prepare(
           `INSERT INTO receipt_audits (id, receipt_id, site_id, event_type, actor, event_json) VALUES (?, ?, ?, 'NEEDS_REVIEW', 'queue', '{}')`,
         ).bind(crypto.randomUUID(), receiptId, siteId).run();
+      }
+      if (receipt.enrichment_status === 'PENDING') {
+        const enrichmentStatus = await dispatchEnrichment(env, {
+          id: receiptId,
+          siteId,
+          imageKey: receipt.image_key,
+          vendorId: receipt.vendor_id,
+          capturedAtUnix: receipt.captured_at_unix,
+          capturedQuantity: receipt.captured_quantity,
+        });
+        await env.DB.prepare(
+          `UPDATE receipts SET enrichment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND enrichment_status = 'PENDING'`,
+        ).bind(enrichmentStatus, receiptId).run();
       }
       message.ack();
     } catch {
@@ -449,17 +502,51 @@ async function consumeReceipts(batch: MessageBatch<ReceiptQueueMessage>, env: En
 async function reconcileAndRetain(env: Env): Promise<void> {
   const recovered = await env.DB.prepare(
     `UPDATE receipts SET status = 'NEEDS_REVIEW', version = version + 1, updated_at = CURRENT_TIMESTAMP
-     WHERE status = 'RECEIVED' AND created_at < datetime('now', '-5 minutes') RETURNING id, site_id`,
-  ).all<{ id: string; site_id: string }>();
+     WHERE status = 'RECEIVED' AND created_at < datetime('now', '-5 minutes') RETURNING id, site_id, image_key`,
+  ).all<{ id: string; site_id: string; image_key: string }>();
   for (const receipt of recovered.results) {
     await env.DB.prepare(
       `INSERT INTO receipt_audits (id, receipt_id, site_id, event_type, actor, event_json)
        VALUES (?, ?, ?, 'NEEDS_REVIEW', 'reconciliation', '{}')`,
     ).bind(crypto.randomUUID(), receipt.id, receipt.site_id).run();
   }
+
+  const pendingEnrichment = await env.DB.prepare(
+    `SELECT id, site_id, image_key, vendor_id, captured_at_unix, captured_quantity FROM receipts
+     WHERE enrichment_status = 'PENDING' AND image_deleted_at IS NULL ORDER BY created_at LIMIT 50`,
+  ).all<{ id: string; site_id: string; image_key: string; vendor_id: string; captured_at_unix: number; captured_quantity: number }>();
+  for (const receipt of pendingEnrichment.results) {
+    try {
+      const enrichmentStatus = await dispatchEnrichment(env, {
+        id: receipt.id,
+        siteId: receipt.site_id,
+        imageKey: receipt.image_key,
+        vendorId: receipt.vendor_id,
+        capturedAtUnix: receipt.captured_at_unix,
+        capturedQuantity: receipt.captured_quantity,
+      });
+      await env.DB.prepare(
+        `UPDATE receipts SET enrichment_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND enrichment_status = 'PENDING'`,
+      ).bind(enrichmentStatus, receipt.id).run();
+    } catch {
+      await env.DB.prepare(
+        `INSERT INTO operations_log (id, site_id, event_type, detail_json) VALUES (?, ?, 'ENRICHMENT_RETRY_FAILED', ?)`,
+      ).bind(crypto.randomUUID(), receipt.site_id, JSON.stringify({ receiptId: receipt.id })).run();
+    }
+  }
+
+  const expiredUploadParts = await env.DB.prepare(
+    `SELECT upload_parts.upload_id, upload_parts.object_key FROM upload_parts
+     JOIN upload_sessions ON upload_sessions.id = upload_parts.upload_id
+     WHERE upload_sessions.status = 'OPEN' AND upload_sessions.expires_at < CURRENT_TIMESTAMP LIMIT 200`,
+  ).all<{ upload_id: string; object_key: string }>();
+  for (const part of expiredUploadParts.results) await env.RECEIPTS.delete(part.object_key);
   await env.DB.batch([
     env.DB.prepare(`DELETE FROM request_nonces WHERE expires_at < CURRENT_TIMESTAMP`),
+    env.DB.prepare(`DELETE FROM service_request_nonces WHERE expires_at < CURRENT_TIMESTAMP`),
     env.DB.prepare(`DELETE FROM request_limits WHERE expires_at < CURRENT_TIMESTAMP`),
+    env.DB.prepare(`DELETE FROM upload_parts WHERE upload_id IN (SELECT id FROM upload_sessions WHERE status = 'OPEN' AND expires_at < CURRENT_TIMESTAMP)`),
+    env.DB.prepare(`UPDATE upload_sessions SET status = 'ABORTED', updated_at = CURRENT_TIMESTAMP WHERE status = 'OPEN' AND expires_at < CURRENT_TIMESTAMP`),
   ]);
 
   const expiredImages = await env.DB.prepare(

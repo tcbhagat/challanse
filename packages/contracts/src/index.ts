@@ -23,6 +23,14 @@ export const receiptUploadMetadataSchema = z.object({
 });
 export type ReceiptUploadMetadata = z.infer<typeof receiptUploadMetadataSchema>;
 
+export const uploadSessionRequestSchema = receiptUploadMetadataSchema.extend({
+  totalBytes: z.number().int().positive().max(750_000),
+  mimeType: z.literal('image/webp'),
+});
+export type UploadSessionRequest = z.infer<typeof uploadSessionRequestSchema>;
+
+export const uploadPartSize = 256_000;
+
 export const receiptReviewSchema = z.object({
   action: z.enum(['VERIFY', 'REJECT']),
   version: z.number().int().positive(),
@@ -73,4 +81,8 @@ export type ReceiptListItem = {
   verifiedQuantity: number | null;
   unit: string;
   notes: string;
+  enrichmentStatus: string;
+  ocrConfidence: number | null;
+  rawOcrJson: Record<string, unknown>;
+  gstStatus: string;
 };

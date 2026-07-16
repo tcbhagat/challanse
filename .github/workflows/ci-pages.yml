@@ -56,9 +56,26 @@ jobs:
       - run: npm test --workspace @challanse/mobile
       - run: npm run build --workspace @challanse/mobile
 
+  enrichment:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/enrichment
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: services/enrichment/requirements.txt
+      - run: python -m pip install --requirement requirements.txt
+      - run: python -m pytest -q
+      - name: Validate PostgreSQL migrations
+        run: test -s migrations/0001_enrichment.sql && grep -q 'immutable_enrichment_audits' migrations/0001_enrichment.sql
+
   deploy-landing:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.PILOT_DEPLOY_ENABLED == 'true'
-    needs: [validate, android]
+    needs: [validate, android, enrichment]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -88,7 +105,7 @@ jobs:
 
   deploy-cloudflare:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.PILOT_DEPLOY_ENABLED == 'true'
-    needs: [validate, android]
+    needs: [validate, android, enrichment]
     runs-on: ubuntu-latest
     environment:
       name: production
@@ -136,7 +153,7 @@ jobs:
 
   release-android:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.PILOT_DEPLOY_ENABLED == 'true'
-    needs: [validate, android]
+    needs: [validate, android, enrichment]
     runs-on: ubuntu-latest
     environment:
       name: production
@@ -166,11 +183,13 @@ jobs:
         run: |
           fingerprint="$(keytool -printcert -jarfile apps/mobile/android/app/build/outputs/apk/release/app-release.apk | sed -n 's/^[[:space:]]*SHA256:[[:space:]]*//p' | head -1 | tr -d ':' | tr '[:lower:]' '[:upper:]')"
           test "$fingerprint" = "$EXPECTED_FINGERPRINT"
+          test -z "$REVOKED_FINGERPRINT" || test "$fingerprint" != "$REVOKED_FINGERPRINT"
           apk_sha256="$(sha256sum apps/mobile/android/app/build/outputs/apk/release/app-release.apk | awk '{print $1}')"
           jq -n --arg commit "$GITHUB_SHA" --arg run_id "$GITHUB_RUN_ID" --arg apk_sha256 "$apk_sha256" --arg signing_cert_sha256 "$fingerprint" \
             '{schema_version:"1.0",commit_sha:$commit,workflow_run_id:$run_id,apk_sha256:$apk_sha256,signing_certificate_sha256:$signing_cert_sha256}' > release-manifest.json
         env:
           EXPECTED_FINGERPRINT: ${{ vars.CHALLANSE_SIGNING_CERT_SHA256 }}
+          REVOKED_FINGERPRINT: ${{ vars.CHALLANSE_REVOKED_SIGNING_CERT_SHA256 }}
       - uses: actions/upload-artifact@v7
         with:
           name: challanse-android-release

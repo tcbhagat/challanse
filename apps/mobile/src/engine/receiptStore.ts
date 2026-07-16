@@ -1,4 +1,4 @@
-import { open } from 'react-native-quick-sqlite';
+import { open, type DB, type Scalar } from '@op-engineering/op-sqlite';
 import { getOrCreateDatabaseKey } from './secureKey';
 import { recordTelemetryEvent } from '../telemetry/telemetryStore';
 import { withReceiptSpan } from '../telemetry/receiptTelemetry';
@@ -25,11 +25,75 @@ export type ReceiptEventRecord = {
 type ReceiptDatabase = {
   executeAsync: (query: string, params?: unknown[]) => Promise<unknown>;
   close: () => void;
+  getDbPath: () => string;
 };
 
-const DATABASE_NAME = 'receipt-ingestion.db';
+const LEGACY_DATABASE_NAME = 'receipt-ingestion.db';
+const DATABASE_NAME = 'receipt-ingestion-v2.db';
 
 let databasePromise: Promise<ReceiptDatabase> | null = null;
+
+function adaptDatabase(database: DB): ReceiptDatabase {
+  return {
+    executeAsync: (query, params = []) => database.execute(query, params as Scalar[]),
+    close: () => database.close(),
+    getDbPath: () => database.getDbPath(),
+  };
+}
+
+async function verifyCipher(database: DB): Promise<void> {
+  const version = await database.execute('PRAGMA cipher_version');
+  const cipherVersion = Object.values(version.rows[0] ?? {})[0];
+  if (typeof cipherVersion !== 'string' || cipherVersion.length === 0) {
+    throw new Error('SQLCipher is not active for the receipt database.');
+  }
+  await database.execute('SELECT COUNT(*) AS table_count FROM sqlite_master');
+}
+
+async function migrateLegacyDatabase(encrypted: DB): Promise<void> {
+  const marker = await encrypted.execute(
+    "SELECT value FROM database_meta WHERE key = 'legacy_migration_complete' LIMIT 1",
+  );
+  if (marker.rows.length > 0) return;
+
+  const legacy = open({ name: LEGACY_DATABASE_NAME });
+  try {
+    const tables = await legacy.execute(
+      "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL ORDER BY name",
+    );
+    if (tables.rows.length > 0) {
+      await encrypted.transaction(async (transaction) => {
+        for (const table of tables.rows) {
+          const tableName = String(table.name);
+          const createSql = String(table.sql);
+          await transaction.execute(createSql);
+          const source = await legacy.execute(`SELECT * FROM "${tableName.replaceAll('"', '""')}"`);
+          if (source.rows.length === 0) continue;
+          const columns = Object.keys(source.rows[0] ?? {});
+          const quotedColumns = columns.map((column) => `"${column.replaceAll('"', '""')}"`).join(',');
+          const placeholders = columns.map(() => '?').join(',');
+          for (const row of source.rows) {
+            await transaction.execute(
+              `INSERT INTO "${tableName.replaceAll('"', '""')}" (${quotedColumns}) VALUES (${placeholders})`,
+              columns.map((column) => row[column]) as Scalar[],
+            );
+          }
+        }
+        const indexes = await legacy.execute(
+          "SELECT sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL ORDER BY name",
+        );
+        for (const index of indexes.rows) await transaction.execute(String(index.sql));
+      });
+    }
+    await encrypted.execute(
+      "INSERT OR REPLACE INTO database_meta (key, value) VALUES ('legacy_migration_complete', ?)",
+      [String(Date.now())],
+    );
+    legacy.delete();
+  } finally {
+    try { legacy.close(); } catch { /* already deleted */ }
+  }
+}
 
 function toUint8Array(blob: Uint8Array | ArrayBuffer): Uint8Array {
   return blob instanceof Uint8Array ? blob : new Uint8Array(blob);
@@ -68,9 +132,13 @@ async function ensureReceiptColumns(database: ReceiptDatabase): Promise<void> {
 
 async function initializeDatabase(): Promise<ReceiptDatabase> {
   const key = await getOrCreateDatabaseKey();
-  const database = open({ name: DATABASE_NAME }) as unknown as ReceiptDatabase;
-
-  await database.executeAsync(`PRAGMA key = '${key}'`);
+  const nativeDatabase = open({ name: DATABASE_NAME, encryptionKey: key });
+  await verifyCipher(nativeDatabase);
+  const database = adaptDatabase(nativeDatabase);
+  await database.executeAsync(
+    'CREATE TABLE IF NOT EXISTS database_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
+  );
+  await migrateLegacyDatabase(nativeDatabase);
   await database.executeAsync('PRAGMA journal_mode = WAL');
   await database.executeAsync('PRAGMA synchronous = NORMAL');
   await database.executeAsync('PRAGMA temp_store = MEMORY');
@@ -95,6 +163,16 @@ async function initializeDatabase(): Promise<ReceiptDatabase> {
   );
 
   return database;
+}
+
+export async function getReceiptDatabaseSecurityStatus(): Promise<{
+  encrypted: boolean;
+  databasePath: string;
+}> {
+  const database = await getReceiptDatabase();
+  const result = await database.executeAsync('PRAGMA cipher_version') as { rows?: Array<Record<string, unknown>> };
+  const version = Object.values(result.rows?.[0] ?? {})[0];
+  return { encrypted: typeof version === 'string' && version.length > 0, databasePath: database.getDbPath() };
 }
 
 export async function getReceiptDatabase(): Promise<ReceiptDatabase> {

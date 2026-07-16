@@ -23,6 +23,9 @@ h1 { font-size: clamp(2rem, 5vw, 3.25rem); letter-spacing: -.045em; margin-botto
 .status-needs_review { color: #854d0e; }.status-verified { color: var(--teal); }.status-rejected { color: var(--red); }
 .receipt-context { border-bottom: 1px solid var(--line); display: grid; grid-column: 2; grid-template-columns: 1fr 1fr; padding: 22px 24px; }
 .receipt-context div { display: grid; gap: 2px; }.receipt-context strong { font-size: 1.05rem; }.receipt-context span { color: var(--muted); font-size: .82rem; }
+.ocr-evidence { border-bottom: 1px solid var(--line); grid-column: 2; padding: 16px 24px; }
+.ocr-evidence summary { color: var(--blue); cursor: pointer; font-size: .82rem; font-weight: 800; min-height: 44px; padding-top: 12px; }
+.ocr-evidence pre { background: var(--navy); border-radius: 8px; color: #e2e8f0; font: .78rem/1.55 ui-monospace, monospace; margin: 8px 0 0; max-height: 220px; overflow: auto; padding: 14px; white-space: pre-wrap; }
 .review-form { align-content: start; display: grid; gap: 18px 16px; grid-column: 2; grid-template-columns: 1fr 1fr; padding: 24px; }
 .review-form label, .enrollment label { color: #344256; display: grid; font-size: .78rem; font-weight: 700; gap: 7px; }
 .review-form .wide { grid-column: 1 / -1; }

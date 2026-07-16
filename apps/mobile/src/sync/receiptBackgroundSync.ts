@@ -6,7 +6,9 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import {
   completeReceiptSync,
+  clearReceiptUploadId,
   getReceiptSyncArtifact,
+  getReceiptUploadId,
   getReceiptSyncSettings,
   incrementReceiptSyncAttempt,
   listPendingReceiptSyncItems,
@@ -15,6 +17,8 @@ import {
   recordReceiptSyncLog,
   seedReceiptSyncSettingsIfMissing,
   setReceiptSyncSettings,
+  setReceiptUploadId,
+  updateReceiptSyncArtifactProgress,
   upsertReceiptSyncArtifact,
   type ReceiptSyncQueueItem,
 } from './receiptSyncStore';
@@ -31,6 +35,7 @@ const IDLE_POLL_MS = 45 * 1000;
 const CONSTRAINT_POLL_MS = 60 * 1000;
 const MAX_ITEMS_PER_WAKE = 5;
 const MAX_IMAGE_BYTES = 750_000;
+const UPLOAD_PART_SIZE = 256_000;
 let isConfigured = false;
 
 NetInfo.configure({ shouldFetchWiFiSSID: true, useNativeReachability: true });
@@ -80,10 +85,8 @@ async function compressedArtifact(item: ReceiptSyncQueueItem): Promise<{ bytes: 
 
 async function syncReceipt(item: ReceiptSyncQueueItem, apiBaseUrl: string, token: string): Promise<void> {
   const artifact = await compressedArtifact(item);
-  const payloadBuffer = artifact.bytes.buffer.slice(artifact.bytes.byteOffset, artifact.bytes.byteOffset + artifact.bytes.byteLength) as ArrayBuffer;
   const imageHash = bytesToHex(sha256(artifact.bytes));
-  const form = new FormData();
-  form.append('metadata', JSON.stringify({
+  const metadata = {
     receiptId: item.receiptId,
     vendorId: item.vendorId,
     capturedAtUnix: item.capturedAtUnix,
@@ -91,26 +94,61 @@ async function syncReceipt(item: ReceiptSyncQueueItem, apiBaseUrl: string, token
     imageSha256: imageHash,
     appVersion: item.appVersion,
     configurationVersion: item.configurationVersion,
-  }));
-  const imageBlob = new Blob([payloadBuffer as unknown as Blob], { type: artifact.mimeType, lastModified: Date.now() });
-  (form as FormData & { append(name: string, value: unknown, fileName?: string): void }).append('image', imageBlob, `${item.receiptId}.webp`);
-
-  await markReceiptSyncState({ receiptEventId: item.receiptEventId, status: 'uploading', detail: 'Sending receipt securely.' });
-  const response = await fetch(`${apiBaseUrl.replace(/\/$/, '')}/v1/receipts`, {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      Authorization: `Bearer ${token}`,
-      'X-ChallanSe-Nonce': nonce(),
-      'X-ChallanSe-Timestamp': String(nowUnix()),
-    },
-    body: form as unknown as RequestInit['body'],
-  });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null) as { error?: { code?: string; message?: string } } | null;
-    throw new Error(payload?.error?.code || `UPLOAD_HTTP_${response.status}`);
+    totalBytes: artifact.bytes.byteLength,
+    mimeType: 'image/webp',
+  };
+  const root = apiBaseUrl.replace(/\/$/, '');
+  let uploadId = await getReceiptUploadId(item.receiptEventId);
+  if (!uploadId) {
+    const sessionResponse = await fetch(`${root}/v1/uploads`, {
+      method: 'POST',
+      headers: { Accept: 'application/json', Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(metadata),
+    });
+    if (!sessionResponse.ok) throw new Error(`UPLOAD_SESSION_HTTP_${sessionResponse.status}`);
+    const session = await sessionResponse.json() as { uploadId?: string; complete?: boolean };
+    if (session.complete) {
+      await completeReceiptSync({ receiptEventId: item.receiptEventId, uploadedBytes: artifact.bytes.byteLength, totalBytes: artifact.bytes.byteLength });
+      return;
+    }
+    if (!session.uploadId) throw new Error('UPLOAD_SESSION_INVALID');
+    uploadId = session.uploadId;
+    await setReceiptUploadId(item.receiptEventId, uploadId);
   }
+  const progressResponse = await fetch(`${root}/v1/uploads/${uploadId}`, { headers: { Accept: 'application/json', Authorization: `Bearer ${token}` } });
+  if (!progressResponse.ok) {
+    if (progressResponse.status === 404 || progressResponse.status === 409) await clearReceiptUploadId(item.receiptEventId);
+    throw new Error(`UPLOAD_PROGRESS_HTTP_${progressResponse.status}`);
+  }
+  const progress = await progressResponse.json() as { parts: Array<{ partNumber: number; sha256: string }>; uploadedBytes: number };
+  const confirmed = new Map(progress.parts.map((part) => [part.partNumber, part.sha256]));
+  await markReceiptSyncState({ receiptEventId: item.receiptEventId, status: 'uploading', detail: 'Sending confirmed image parts.' });
+  for (let offset = 0, partNumber = 0; offset < artifact.bytes.byteLength; offset += UPLOAD_PART_SIZE, partNumber += 1) {
+    const part = artifact.bytes.slice(offset, Math.min(offset + UPLOAD_PART_SIZE, artifact.bytes.byteLength));
+    const partHash = bytesToHex(sha256(part));
+    if (confirmed.get(partNumber) === partHash) continue;
+    const partBuffer = part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength) as ArrayBuffer;
+    const partResponse = await fetch(`${root}/v1/uploads/${uploadId}/parts/${partNumber}`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/octet-stream',
+        'X-Part-Sha256': partHash,
+        'X-ChallanSe-Nonce': nonce(),
+        'X-ChallanSe-Timestamp': String(nowUnix()),
+      },
+      body: partBuffer as unknown as RequestInit['body'],
+    });
+    if (!partResponse.ok) throw new Error(`UPLOAD_PART_HTTP_${partResponse.status}`);
+    await updateReceiptSyncArtifactProgress(item.receiptEventId, Math.min(offset + part.byteLength, artifact.bytes.byteLength));
+  }
+  const response = await fetch(`${root}/v1/uploads/${uploadId}/complete`, {
+    method: 'POST',
+    headers: { Accept: 'application/json', Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw new Error(`UPLOAD_COMPLETE_HTTP_${response.status}`);
   await completeReceiptSync({ receiptEventId: item.receiptEventId, uploadedBytes: artifact.bytes.byteLength, totalBytes: artifact.bytes.byteLength });
+  await clearReceiptUploadId(item.receiptEventId);
   await recordReceiptSyncLog({ receiptEventId: item.receiptEventId, state: 'synced', detail: 'Receipt safely acknowledged by ChallanSe.' });
 }
 

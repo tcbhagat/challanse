@@ -1,6 +1,6 @@
 # ChallanSe controlled pilot
 
-Production monorepo for a capped, real-data construction receipt pilot. The existing Mitranet implementation remains independent until field acceptance.
+Production monorepo for a capped, real-data construction receipt pilot. Cloudflare remains the durable capture edge; asynchronous enrichment is isolated behind disabled-by-default provider adapters.
 
 ## Applications
 
@@ -8,8 +8,9 @@ Production monorepo for a capped, real-data construction receipt pilot. The exis
 - `review.challanse.constrovet.com`: Cloudflare Access-protected reviewer inbox.
 - `api.challanse.constrovet.com`: Cloudflare Worker API, queue consumer, and retention scheduler.
 - `apps/mobile`: Android 8+ offline-first capture app for enrolled site devices.
+- `services/enrichment`: signed FastAPI/Celery boundary for OCR, GST, reconciliation, grouped notifications, credit data, and telemetry.
 
-Private WebP images are stored in R2, receipt and audit records in D1, and receipt identifiers only in Cloudflare Queues. No OCR, GST, AWS, messaging, or synthetic production data is used.
+Private WebP images are stored in R2, receipt and audit records in D1, and receipt identifiers only in Cloudflare Queues. The Android queue uses OP-SQLite compiled with SQLCipher, a Keystore-held database key, 256 KB resumable upload parts, and a manual shutter. OCR, GST, AWS, WhatsApp, Slack, and credit adapters remain disabled until separately approved and configured.
 
 ## Local validation
 
@@ -19,6 +20,7 @@ Requires Node.js 24, Java 17, and the Android SDK for the Android build.
 npm ci
 npm run check
 npm test
+npm run test:enrichment
 npm run build
 bash scripts/test-edge-integration.sh
 npm run build --workspace @challanse/mobile
@@ -48,8 +50,11 @@ git pull --ff-only
 ./scripts/go-live.sh preflight
 ./scripts/go-live.sh provision
 ./scripts/go-live.sh configure-github
+./scripts/go-live.sh rotate-signing
 ./scripts/go-live.sh deploy
 ```
+
+The keystore previously displayed in an editor is not release-safe. Before any deployment or APK distribution, run `rotate-signing`, type the exact confirmation phrase shown by the CLI, back up the replacement outside the repository, and verify that GitHub records both the new fingerprint and the revoked fingerprint. Never open or paste a `.jks` file.
 
 `dns-onboard` idempotently creates or reuses the Cloudflare zone, preserves `www` and the legacy Google MX record as DNS-only, and replaces the retired `app` origin with a proxied `301` redirect to `https://www.constrovet.com/app/`. It aborts on conflicts and prints the exact nameservers for the owner to enter manually. `provision` then creates D1, private R2, receipt and dead-letter queues, Turnstile, the reviewer Access application, and the landing DNS record. If a first run stops after Turnstile creation, the next run retains an existing GitHub secret or explicitly confirms one API rotation before sending the replacement directly to GitHub. The CLI saves only non-secret state under `~/.config/challanse/`; credentials are held in memory or sent directly to GitHub environment secrets. It never changes Namecheap nameservers itself.
 
@@ -97,6 +102,8 @@ The first reviewer entered during provisioning is the administrator; the second 
 ## Deployment safety
 
 Production deployment is intentionally disabled unless `PILOT_DEPLOY_ENABLED=true`. Protected `main` runs contract, Worker, migration, integration, security audit, reviewer, accessibility, Android unit, and Android debug-build checks first. Production uses the GitHub `production` environment approval gate.
+
+The enrichment service intentionally returns `503` instead of acknowledging and dropping an event when Celery/Redis is disabled or unavailable. Staging may use deterministic `mock` adapters. Production provider modes remain `disabled` until credentials, legal approval, redaction review, and provider-specific acceptance tests are complete. See `docs/hybrid-enrichment.md`.
 
 The capped pilot is designed around the free allowances, not an uptime guarantee: [D1 free-plan recovery is limited](https://developers.cloudflare.com/d1/platform/limits/), [R2 includes 10 GB-month of standard storage](https://developers.cloudflare.com/r2/pricing/), and [Queues includes 10,000 operations per day](https://developers.cloudflare.com/queues/platform/pricing/). Recheck these limits before enabling production because provider allowances can change.
 

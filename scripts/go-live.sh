@@ -522,13 +522,50 @@ configure_github() {
   printf 'GitHub production secrets and Android signing are configured.\nCertificate SHA-256: %s\nBack up %s offline.\n' "$fingerprint" "$keystore"
 }
 
+rotate_signing() {
+  preflight
+  command -v keytool >/dev/null 2>&1 || die "keytool is required. On Ubuntu run: sudo apt update && sudo apt install -y openjdk-17-jdk-headless"
+  load_state
+  local old_keystore="${SIGNING_KEYSTORE_PATH:-}" old_fingerprint="${SIGNING_CERT_SHA256:-}" keystore password password_confirm fingerprint encoded confirmation
+  [[ -n "$old_keystore" && -n "$old_fingerprint" ]] || die "Existing signing state is missing. Run configure-github instead."
+  printf 'Exposed signing certificate SHA-256: %s\n' "$old_fingerprint"
+  read -r -p 'Type ROTATE EXPOSED SIGNING KEY to continue: ' confirmation
+  [[ "$confirmation" == "ROTATE EXPOSED SIGNING KEY" ]] || die "Signing rotation cancelled."
+  keystore="${STATE_DIR}/challanse-release-$(date -u +%Y%m%dT%H%M%SZ).jks"
+  validate_new_keystore_path "$keystore"
+  printf 'Replacement keystore will be created at: %s\n' "$keystore"
+  read -r -s -p "New Android keystore/key password: " password; printf '\n'
+  read -r -s -p "Repeat new Android password: " password_confirm; printf '\n'
+  [[ -n "$password" && "$password" == "$password_confirm" ]] || die "Android passwords do not match."
+  keytool -genkeypair -v -keystore "$keystore" -alias challanse -keyalg RSA -keysize 4096 -validity 10000 -storepass "$password" -keypass "$password" -dname 'CN=ChallanSe, O=Constrovet, C=IN' >/dev/null
+  chmod 600 "$keystore"
+  fingerprint="$(signing_fingerprint "$keystore" "$password")"
+  [[ "$fingerprint" =~ ^[0-9A-F]{64}$ && "$fingerprint" != "$old_fingerprint" ]] || die "Replacement signing identity is invalid or unchanged."
+  encoded="$(base64 -w0 "$keystore")"
+  printf '%s' "$encoded" | gh secret set CHALLANSE_KEYSTORE_BASE64 --repo "$REPO" --env production
+  printf '%s' "$password" | gh secret set CHALLANSE_KEYSTORE_PASSWORD --repo "$REPO" --env production
+  printf '%s' challanse | gh secret set CHALLANSE_KEY_ALIAS --repo "$REPO" --env production
+  printf '%s' "$password" | gh secret set CHALLANSE_KEY_PASSWORD --repo "$REPO" --env production
+  gh variable set CHALLANSE_REVOKED_SIGNING_CERT_SHA256 --repo "$REPO" --env production --body "$old_fingerprint"
+  gh variable set CHALLANSE_SIGNING_CERT_SHA256 --repo "$REPO" --env production --body "$fingerprint"
+  save_state SIGNING_KEYSTORE_PATH "$keystore"
+  save_state SIGNING_CERT_SHA256 "$fingerprint"
+  if [[ -f "$old_keystore" ]]; then shred -u -- "$old_keystore"; fi
+  unset password password_confirm encoded CLOUDFLARE_API_TOKEN
+  printf 'Signing identity rotated. New certificate SHA-256: %s\nBack up %s offline and never open it in an editor.\n' "$fingerprint" "$keystore"
+}
+
 deploy() {
   preflight
   local required_secrets required_variables run_id pending ids body deployment_flag commit_sha confirmation github_fingerprint
   required_secrets='["CLOUDFLARE_ACCOUNT_ID","CLOUDFLARE_API_TOKEN","DEVICE_TOKEN_PEPPER","TURNSTILE_SECRET","CHALLANSE_KEYSTORE_BASE64","CHALLANSE_KEYSTORE_PASSWORD","CHALLANSE_KEY_ALIAS","CHALLANSE_KEY_PASSWORD"]'
-  required_variables='["CLOUDFLARE_D1_DATABASE_ID","CLOUDFLARE_ACCESS_TEAM_DOMAIN","CLOUDFLARE_ACCESS_AUD","TURNSTILE_SITE_KEY","CHALLANSE_SIGNING_CERT_SHA256"]'
+  required_variables='["CLOUDFLARE_D1_DATABASE_ID","CLOUDFLARE_ACCESS_TEAM_DOMAIN","CLOUDFLARE_ACCESS_AUD","TURNSTILE_SITE_KEY","CHALLANSE_SIGNING_CERT_SHA256","CHALLANSE_REVOKED_SIGNING_CERT_SHA256"]'
   jq -e --argjson required "$required_secrets" '($required - [.[].name]) | length == 0' >/dev/null < <(gh secret list --repo "$REPO" --env production --json name) || die "Required production secrets are missing."
   jq -e --argjson required "$required_variables" '($required - [.[].name]) | length == 0' >/dev/null < <(gh variable list --repo "$REPO" --env production --json name) || die "Required production variables are missing."
+  local revoked_fingerprint
+  revoked_fingerprint="$(github_environment_variable CHALLANSE_REVOKED_SIGNING_CERT_SHA256)"
+  github_fingerprint="$(github_environment_variable CHALLANSE_SIGNING_CERT_SHA256)"
+  [[ -n "$revoked_fingerprint" && -n "$github_fingerprint" && "$revoked_fingerprint" != "$github_fingerprint" ]] || die "Rotate the exposed Android signing identity before deployment: ./scripts/go-live.sh rotate-signing"
   deployment_flag="$(gh variable list --repo "$REPO" --json name,value --jq '.[] | select(.name == "PILOT_DEPLOY_ENABLED") | .value')"
   [[ "$deployment_flag" == "false" ]] || die "PILOT_DEPLOY_ENABLED must be false before deployment. Run rollback-production.sh first."
   load_state
@@ -693,6 +730,7 @@ Usage: scripts/go-live.sh <command>
   preflight
   provision
   configure-github
+  rotate-signing
   harden-github
   deploy
   https-status
@@ -711,6 +749,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     preflight) preflight ;;
     provision) provision ;;
     configure-github) configure_github ;;
+    rotate-signing) rotate_signing ;;
     harden-github) harden_github ;;
     deploy) deploy ;;
     https-status) https_status ;;

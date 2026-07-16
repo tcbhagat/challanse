@@ -1,18 +1,26 @@
 /* global jest, global */
 
-global.__quickSqliteQueries = [];
+global.__opSqliteQueries = [];
 
-jest.mock('react-native-quick-sqlite', () => ({
+jest.mock('@op-engineering/op-sqlite', () => ({
   open: () => ({
-    executeAsync: jest.fn(async (query, params) => {
-      global.__quickSqliteQueries.push({ query: String(query), params });
-      if (String(query).includes('COUNT(*)')) {
-        return { rows: [{ event_count: 0 }] };
+    execute: jest.fn(async (query, params) => {
+      global.__opSqliteQueries.push({ query: String(query), params });
+      if (String(query).includes('cipher_version')) {
+        return { rows: [{ cipher_version: '4.6.1' }], rowsAffected: 0 };
       }
-
-      return { rows: [] };
+      if (String(query).includes('COUNT(*)')) {
+        return { rows: [{ event_count: 0 }], rowsAffected: 0 };
+      }
+      if (String(query).includes('database_meta')) {
+        return { rows: [{ value: 'complete' }], rowsAffected: 0 };
+      }
+      return { rows: [], rowsAffected: 0 };
     }),
+    transaction: jest.fn(async (callback) => callback({ execute: jest.fn(async () => ({ rows: [], rowsAffected: 0 })) })),
+    delete: jest.fn(),
     close: jest.fn(),
+    getDbPath: jest.fn(() => '/data/receipt-ingestion-v2.db'),
   }),
 }));
 
@@ -60,11 +68,6 @@ jest.mock('react-native-worklets', () => ({
   scheduleOnRN: jest.fn((fun, ...args) => fun(...args)),
 }));
 
-jest.mock('react-native-fast-tflite', () => ({
-  loadTensorflowModel: jest.fn(async () => {
-    throw new Error('mocked model load failure');
-  }),
-}));
 
 jest.mock('react-native-background-actions', () => ({
   __esModule: true,

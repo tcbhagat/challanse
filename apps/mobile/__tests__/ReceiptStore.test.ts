@@ -1,12 +1,19 @@
-import { insertReceiptEvent } from '../src/engine/receiptStore';
+import { getReceiptDatabaseSecurityStatus, insertReceiptEvent } from '../src/engine/receiptStore';
 
 const queryLog = globalThis as unknown as {
-  __quickSqliteQueries: Array<{ query: string; params?: unknown[] }>;
+  __opSqliteQueries: Array<{ query: string; params?: unknown[] }>;
 };
 
 describe('receipt hot path', () => {
+  it('requires a native SQLCipher build before accepting receipt data', async () => {
+    await expect(getReceiptDatabaseSecurityStatus()).resolves.toEqual({
+      encrypted: true,
+      databasePath: '/data/receipt-ingestion-v2.db',
+    });
+  });
+
   it('retains all metadata across 100 synthetic writes within the CI latency guard', async () => {
-    queryLog.__quickSqliteQueries.length = 0;
+    queryLog.__opSqliteQueries.length = 0;
     const durations: number[] = [];
 
     for (let index = 0; index < 100; index += 1) {
@@ -27,7 +34,7 @@ describe('receipt hot path', () => {
       expect(record.receiptId).toBe(receiptId);
     }
 
-    const inserts = queryLog.__quickSqliteQueries.filter(({ query }) =>
+    const inserts = queryLog.__opSqliteQueries.filter(({ query }) =>
       query.startsWith('INSERT INTO receipt_events'),
     );
     expect(inserts).toHaveLength(100);

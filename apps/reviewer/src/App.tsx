@@ -65,6 +65,10 @@ function ReceiptCard({ receipt, onSaved }: { receipt: ReceiptListItem; onSaved: 
         <div><strong>{receipt.vendorName}</strong><span>{formatTime(receipt.capturedAtUnix)}</span></div>
         <div><strong>{receipt.capturedQuantity}</strong><span>Site-captured quantity</span></div>
       </div>
+      <details className="ocr-evidence" open={receipt.status === 'NEEDS_REVIEW'}>
+        <summary>OCR evidence {receipt.ocrConfidence === null ? '' : `· ${receipt.ocrConfidence.toFixed(1)}%`}</summary>
+        <pre>{JSON.stringify(receipt.rawOcrJson, null, 2)}</pre>
+      </details>
       <form className="review-form" onSubmit={(event) => { event.preventDefault(); void submit('VERIFY'); }}>
         <label>Challan number<input value={challanNumber} onChange={(event) => setChallanNumber(event.target.value)} disabled={!editable || busy} /></label>
         <label className="wide">Material description<input required value={description} onChange={(event) => setDescription(event.target.value)} disabled={!editable || busy} /></label>

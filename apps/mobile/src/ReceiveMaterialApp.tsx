@@ -10,67 +10,26 @@ import {
 import {
   Camera,
   CommonResolutions,
-  type Frame,
   usePhotoOutput,
   useCameraDevice,
   useCameraPermission,
-  useFrameOutput,
 } from 'react-native-vision-camera';
-import { scheduleOnRN } from 'react-native-worklets';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import DeviceInfo from 'react-native-device-info';
 import { insertReceiptEvent } from './engine/receiptStore';
-import {
-  buildReceiptModelInput,
-  classifyReceiptTensor,
-  loadReceiptInferenceModel,
-} from './model/receiptInference';
 import { startReceiptBackgroundSync } from './sync/receiptBackgroundSync';
 import type { PilotConfiguration, PilotVendor } from './config/deviceEnrollment';
 
-type CaptureCandidate = {
-  score: number;
-};
+const CAPTURE_COOLDOWN_MS = 2000;
 
-const AUTO_CAPTURE_THRESHOLD = 0.71;
-const MODEL_THRESHOLD = 0.5;
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
-
-function getFrameBytes(frame: Frame): Uint8Array {
-  const planes = frame.isPlanar ? frame.getPlanes() : [];
-  const sourceBuffer =
-    planes.length > 0 && planes[0] != null ? planes[0].getPixelBuffer() : frame.getPixelBuffer();
-
-  return new Uint8Array(sourceBuffer);
-}
-
-function scoreContrast(bytes: Uint8Array): number {
-  if (bytes.length === 0) {
-    return 0;
+function imageFingerprint(bytes: Uint8Array): string {
+  const step = Math.max(1, Math.floor(bytes.length / 64));
+  let hash = 2166136261;
+  for (let index = 0; index < bytes.length; index += step) {
+    hash ^= bytes[index] ?? 0;
+    hash = Math.imul(hash, 16777619);
   }
-
-  const sampleStep = Math.max(1, Math.floor(bytes.length / 256));
-  let brightCount = 0;
-  let diffTotal = 0;
-  let lastValue = bytes[0] ?? 0;
-  let sampleCount = 0;
-
-  for (let index = 0; index < bytes.length; index += sampleStep) {
-    const value = bytes[index] ?? 0;
-    if (value >= 210) {
-      brightCount += 1;
-    }
-    diffTotal += Math.abs(value - lastValue);
-    lastValue = value;
-    sampleCount += 1;
-  }
-
-  const brightRatio = brightCount / Math.max(1, sampleCount);
-  const contrastRatio = diffTotal / Math.max(1, sampleCount) / 255;
-  return clamp(brightRatio * 0.65 + contrastRatio * 0.35, 0, 1);
+  return `${bytes.length}:${hash >>> 0}`;
 }
 
 function VendorOrb({
@@ -140,7 +99,8 @@ function ReceiveMaterialScreen({ configuration }: { configuration: PilotConfigur
   const captureLockRef = useRef(false);
   const selectedVendorRef = useRef(selectedVendorId);
   const quantityRef = useRef(quantity);
-  const modelRef = useRef<Awaited<ReturnType<typeof loadReceiptInferenceModel>> | null>(null);
+  const lastCaptureAtRef = useRef(0);
+  const lastFingerprintRef = useRef('');
   const photoOutput = usePhotoOutput({
     targetResolution: CommonResolutions.UHD_4_3,
     containerFormat: 'jpeg',
@@ -177,24 +137,12 @@ function ReceiveMaterialScreen({ configuration }: { configuration: PilotConfigur
     captureLockRef.current = captureLock;
   }, [captureLock]);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    loadReceiptInferenceModel().then((loadedModel) => {
-      if (!cancelled) {
-        modelRef.current = loadedModel;
-      }
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const handleCandidate = useCallback(async (candidate: CaptureCandidate) => {
+  const handleCapture = useCallback(async () => {
     if (captureLockRef.current) {
       return;
     }
+    const now = Date.now();
+    if (now - lastCaptureAtRef.current < CAPTURE_COOLDOWN_MS) return;
 
     captureLockRef.current = true;
     setCaptureLock(true);
@@ -203,29 +151,9 @@ function ReceiveMaterialScreen({ configuration }: { configuration: PilotConfigur
 
     try {
       photo = await photoOutputRef.current.capturePhoto({}, {});
-
-      const model = modelRef.current;
-      let modelConfidence = 1;
-
-      if (model) {
-        try {
-          const modelInput = buildReceiptModelInput(photo);
-          const classification = classifyReceiptTensor(model, modelInput);
-          modelConfidence = classification.confidence;
-        } catch {
-          modelConfidence = 0;
-        }
-      }
-
-      const approved =
-        candidate.score >= AUTO_CAPTURE_THRESHOLD &&
-        (modelConfidence >= MODEL_THRESHOLD || modelRef.current == null);
-
-      if (!approved) {
-        return;
-      }
-
       const imageBytes = new Uint8Array(photo.getFileData());
+      const fingerprint = imageFingerprint(imageBytes);
+      if (fingerprint === lastFingerprintRef.current) return;
       await insertReceiptEvent({
         imageBlob: imageBytes,
         vendorId: selectedVendorRef.current,
@@ -238,6 +166,8 @@ function ReceiveMaterialScreen({ configuration }: { configuration: PilotConfigur
       });
 
       Vibration.vibrate(16);
+      lastCaptureAtRef.current = Date.now();
+      lastFingerprintRef.current = fingerprint;
       setQuantity(1);
     } finally {
       photo?.dispose();
@@ -246,34 +176,7 @@ function ReceiveMaterialScreen({ configuration }: { configuration: PilotConfigur
     }
   }, [configuration]);
 
-  const frameOutput = useFrameOutput({
-    targetResolution: CommonResolutions.VGA_4_3,
-    pixelFormat: 'yuv',
-    dropFramesWhileBusy: true,
-    enablePreviewSizedOutputBuffers: true,
-    allowDeferredStart: true,
-    onFrame(frame) {
-      'worklet';
-
-      if (!hasPermission || captureLock) {
-        frame.dispose();
-        return;
-      }
-
-      const bytes = getFrameBytes(frame);
-      const score = scoreContrast(bytes);
-
-      if (score >= AUTO_CAPTURE_THRESHOLD) {
-        scheduleOnRN(handleCandidate, {
-          score,
-        });
-      }
-
-      frame.dispose();
-    },
-  });
-
-  const activeOutputs = useMemo(() => [frameOutput, photoOutput], [frameOutput, photoOutput]);
+  const activeOutputs = useMemo(() => [photoOutput], [photoOutput]);
 
   const canShowCamera = hasPermission && cameraDevice != null;
 
@@ -328,6 +231,15 @@ function ReceiveMaterialScreen({ configuration }: { configuration: PilotConfigur
           onDecrement={() => setQuantity((current) => Math.max(1, current - 1))}
           onIncrement={() => setQuantity((current) => Math.min(99, current + 1))}
         />
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Capture challan. चालान की फोटो लें"
+          disabled={captureLock || !canShowCamera}
+          onPress={handleCapture}
+          style={({ pressed }) => [styles.captureButton, pressed && styles.pressed, captureLock && styles.captureButtonBusy]}>
+          <View style={styles.captureButtonInner} />
+        </Pressable>
 
       </View>
     </View>
@@ -434,6 +346,26 @@ const styles = StyleSheet.create({
     lineHeight: 50,
     fontWeight: '900',
     color: '#ffffff',
+  },
+  captureButton: {
+    alignSelf: 'center',
+    width: 96,
+    height: 96,
+    borderRadius: 999,
+    borderWidth: 5,
+    borderColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+  },
+  captureButtonInner: {
+    width: 72,
+    height: 72,
+    borderRadius: 999,
+    backgroundColor: '#f59e0b',
+  },
+  captureButtonBusy: {
+    opacity: 0.45,
   },
   pressed: {
     transform: [{ scale: 0.97 }],

@@ -8,6 +8,8 @@ export interface Env {
   DEVICE_TOKEN_PEPPER: string;
   TURNSTILE_SECRET: string;
   ENVIRONMENT: string;
+  ENRICHMENT_URL?: string;
+  ENRICHMENT_SHARED_SECRET?: string;
 }
 
 export type ReceiptQueueMessage = {

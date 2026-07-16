@@ -11,6 +11,7 @@
     "check:html": "html-validate index.html",
     "check:js": "node --check assets/js/main.js && node --check assets/js/challanse.js",
     "test": "npm run test --workspaces --if-present",
+    "test:enrichment": "PYTHONPATH=services/enrichment python3 -m pytest -q services/enrichment/tests",
     "build": "npm run build:landing && npm run build --workspace @challanse/contracts --if-present && npm run build --workspace @challanse/edge && npm run build --workspace @challanse/reviewer",
     "build:landing": "node scripts/build-landing.mjs",
     "audit": "for run in 1 2 3; do lighthouse http://127.0.0.1:4173/ --only-categories=performance,accessibility,best-practices,seo --output=json --output-path=.lighthouse-$run.json --quiet --chrome-flags=\"--headless=new --no-sandbox --disable-gpu\" || exit 1; done && node scripts/check-lighthouse.mjs .lighthouse-1.json .lighthouse-2.json .lighthouse-3.json"

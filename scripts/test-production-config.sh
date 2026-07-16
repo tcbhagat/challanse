@@ -30,6 +30,15 @@ grep -Fq 'CHALLANSE_SIGNING_CERT_SHA256' scripts/go-live.sh
 grep -Fq 'Type DEPLOY' scripts/go-live.sh
 grep -Fq 'https-status' scripts/go-live.sh
 grep -Fq 'harden-github' scripts/go-live.sh
+grep -Fq 'ROTATE EXPOSED SIGNING KEY' scripts/go-live.sh
+grep -Fq 'Rotate the exposed Android signing identity before deployment' scripts/go-live.sh
+grep -Fq 'CHALLANSE_REVOKED_SIGNING_CERT_SHA256' .github/workflows/ci-pages.yml
+grep -A5 -Fq '"op-sqlite"' apps/mobile/package.json
+grep -A5 '"op-sqlite"' apps/mobile/package.json | grep -Fq '"sqlcipher": true'
+if test -e apps/mobile/src/assets/mobilenet_v1_1.0_224_quant.tflite; then
+  echo "Generic MobileNet asset must not be shipped." >&2
+  exit 1
+fi
 turnstile_store_line="$(grep -n 'gh secret set TURNSTILE_SECRET' scripts/go-live.sh | cut -d: -f1)"
 access_lookup_line="$(grep -n 'access/organizations' scripts/go-live.sh | cut -d: -f1)"
 [[ "$turnstile_store_line" -lt "$access_lookup_line" ]] || { echo "Turnstile secret must be stored before Access provisioning." >&2; exit 1; }

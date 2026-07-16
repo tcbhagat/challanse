@@ -122,6 +122,14 @@ async function ensureSyncSchema(database: ReceiptDatabase): Promise<void> {
       'setting_value TEXT NOT NULL' +
       ')',
   );
+  await database.executeAsync(
+    'CREATE TABLE IF NOT EXISTS receipt_upload_sessions (' +
+      'receipt_event_id INTEGER PRIMARY KEY,' +
+      'upload_id TEXT NOT NULL,' +
+      'created_at_unix INTEGER NOT NULL,' +
+      'updated_at_unix INTEGER NOT NULL' +
+      ')',
+  );
 }
 
 async function getSyncDatabase(): Promise<ReceiptDatabase> {
@@ -343,6 +351,30 @@ export async function updateReceiptSyncArtifactProgress(
     'UPDATE receipt_sync_artifacts SET uploaded_bytes = ?, updated_at_unix = ? WHERE receipt_event_id = ?',
     [uploadedBytes, nowUnix(), receiptEventId],
   );
+}
+
+export async function getReceiptUploadId(receiptEventId: number): Promise<string> {
+  const database = await getSyncDatabase();
+  const result = await database.executeAsync(
+    'SELECT upload_id FROM receipt_upload_sessions WHERE receipt_event_id = ? LIMIT 1',
+    [receiptEventId],
+  ) as { rows?: Array<{ upload_id?: string }> };
+  return asString(result.rows?.[0]?.upload_id);
+}
+
+export async function setReceiptUploadId(receiptEventId: number, uploadId: string): Promise<void> {
+  const database = await getSyncDatabase();
+  const timestamp = nowUnix();
+  await database.executeAsync(
+    'INSERT OR REPLACE INTO receipt_upload_sessions (receipt_event_id, upload_id, created_at_unix, updated_at_unix) ' +
+      'VALUES (?, ?, COALESCE((SELECT created_at_unix FROM receipt_upload_sessions WHERE receipt_event_id = ?), ?), ?)',
+    [receiptEventId, uploadId, receiptEventId, timestamp, timestamp],
+  );
+}
+
+export async function clearReceiptUploadId(receiptEventId: number): Promise<void> {
+  const database = await getSyncDatabase();
+  await database.executeAsync('DELETE FROM receipt_upload_sessions WHERE receipt_event_id = ?', [receiptEventId]);
 }
 
 export async function upsertReceiptSyncState(input: {
