@@ -31,6 +31,15 @@ if (validate_new_keystore_path "$safe_dir/password!value.jks") >/dev/null 2>&1; 
 fi
 rm -rf "$safe_dir"
 
+[[ -z "$(release_keystore_paths_in_history)" ]] || fail "the standard Android debug keystore was treated as a release secret"
+keystore_fixture="$(mktemp -d)"
+mkdir -p "$keystore_fixture/apps/mobile/android/app"
+touch "$keystore_fixture/apps/mobile/android/app/debug.keystore"
+[[ -z "$(release_keystore_paths_in_worktree "$keystore_fixture")" ]] || fail "the standard Android debug keystore was rejected"
+touch "$keystore_fixture/release.jks"
+[[ "$(release_keystore_paths_in_worktree "$keystore_fixture")" == "$keystore_fixture/release.jks" ]] || fail "a release keystore in the repository was not rejected"
+rm -rf "$keystore_fixture"
+
 operator_report="$TEST_CONFIG/operator-training.json"
 cat > "$operator_report" <<'JSON'
 {"schema_version":"1.0","trained_operators":2,"incident_runbook_exercise_passed":true,"restore_observation_completed":true,"independent_production_approval_enabled":true,"completed_at":"2026-07-16T00:00:00Z","evidence_owner":"operations-owner"}

@@ -402,6 +402,19 @@ validate_new_keystore_path() {
   [[ "$(basename "$keystore")" =~ ^[A-Za-z0-9._-]+\.jks$ ]] || die "Keystore filename contains unsafe characters. Use letters, numbers, dots, dashes, or underscores."
 }
 
+release_keystore_paths_in_history() {
+  git rev-list --objects --all |
+    awk '{print $2}' |
+    grep -Ei '\.(jks|keystore)$' |
+    grep -Ev '^apps/mobile/android/app/debug\.keystore$' || true
+}
+
+release_keystore_paths_in_worktree() {
+  local scan_root="$1"
+  find "$scan_root" -type f \( -name '*.jks' -o -name '*.keystore' \) \
+    ! -path "$scan_root/apps/mobile/android/app/debug.keystore" -print
+}
+
 rotate_turnstile_secret() {
   local sitekey="$1" rotated secret
   printf '%s\n' 'The existing Turnstile widget has no secret in GitHub because an earlier provisioning run stopped before completion.' >&2
@@ -921,11 +934,11 @@ rotate_signing() {
   load_state
   local old_keystore="${SIGNING_KEYSTORE_PATH:-}" old_fingerprint="${SIGNING_CERT_SHA256:-}" keystore password password_confirm fingerprint encoded confirmation backup_dir backup_path backup_password backup_password_confirm
   [[ -n "$old_keystore" && -n "$old_fingerprint" ]] || die "Existing signing state is missing. Run configure-github instead."
-  if git rev-list --objects --all | awk '{print $2}' | grep -Eiq '\.(jks|keystore)$'; then
-    die "A keystore path exists in Git history. Remove it from history and rotate any affected credentials before continuing."
+  if [[ -n "$(release_keystore_paths_in_history)" ]]; then
+    die "A release keystore path exists in Git history. Remove it from history and rotate any affected credentials before continuing."
   fi
-  if find "$ROOT" -type f \( -name '*.jks' -o -name '*.keystore' \) -print -quit | grep -q .; then
-    die "A keystore exists inside the repository working tree. Remove it securely before continuing."
+  if [[ -n "$(release_keystore_paths_in_worktree "$ROOT")" ]]; then
+    die "A release keystore exists inside the repository working tree. Remove it securely before continuing."
   fi
   printf 'Exposed signing certificate SHA-256: %s\n' "$old_fingerprint"
   read -r -p 'Type ROTATE EXPOSED SIGNING KEY to continue: ' confirmation
