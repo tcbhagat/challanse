@@ -917,6 +917,7 @@ def test_postgres_ingress_and_reconciliation_are_idempotent() -> None:
     assert rows[0]["is_over"] is True
 
     settings = Settings(DATABASE_URL=database_url)
+    telemetry_period = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     record_telemetry(settings, TelemetryBatch.model_validate({"measurements": [
         {
             "source_event_id": "device-1:write-1",
@@ -926,8 +927,8 @@ def test_postgres_ingress_and_reconciliation_are_idempotent() -> None:
             "metric_name": "frontend_write_duration_ms",
             "metric_value": 101,
             "sample_count": 1,
-            "period_start": "2026-07-16T00:00:00Z",
-            "period_end": "2026-07-16T00:00:00Z",
+            "period_start": telemetry_period,
+            "period_end": telemetry_period,
         },
         {
             "source_event_id": "device-1:sync-1",
@@ -937,8 +938,8 @@ def test_postgres_ingress_and_reconciliation_are_idempotent() -> None:
             "metric_name": "sync_failure_rate",
             "metric_value": 0.25,
             "sample_count": 4,
-            "period_start": "2026-07-16T00:00:00Z",
-            "period_end": "2026-07-16T00:00:00Z",
+            "period_start": telemetry_period,
+            "period_end": telemetry_period,
         },
     ]}))
     alerts = generate_nightly_report(settings)

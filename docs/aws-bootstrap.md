@@ -24,6 +24,8 @@ terraform -chdir=infra/terraform/staging plan \
   -var="container_image=<immutable-ecr-uri>@sha256:<digest>" \
   -var="adot_collector_image=<immutable-adot-image>@sha256:<digest>" \
   -var="cloudflared_image=<immutable-cloudflared-image>@sha256:<digest>" \
+  -var="certificate_arn=<staging-acm-arn>" \
+  -var="terraform_state_bucket_arn=arn:aws:s3:::<staging-state-bucket>" \
   -var="expected_aws_account_id=<staging-account-id>" \
   -var="certificate_arn=<staging-acm-arn>" \
   -var="backup_destination_vault_arn=<backup-vault-arn>" \
@@ -34,7 +36,7 @@ terraform -chdir=infra/terraform/staging plan \
   -var="services_enabled=false"
 ```
 
-Review and apply the saved plan. Run migrations as a private one-off ECS task, populate active/next HMAC and Access values through the guarded CLI, then enable services only after health and readiness pass.
+Review and apply the saved plan. The ALB listener must use TLS 1.2 or newer and remain reachable only from the Cloudflare Tunnel security group. Run `./scripts/go-live.sh configure-tunnel-origin` with Terraform's `private_origin_url` output, then verify Cloudflare records `originServerName=api.challanse.constrovet.com` and `noTLSVerify=false`. Run migrations as a private one-off ECS task, populate active/next HMAC and Access values through the guarded CLI, then enable services only after health and readiness pass.
 
 ## Production bootstrap
 
@@ -56,6 +58,7 @@ Keep `services_enabled=false`, `AWS_ENRICHMENT_BOOTSTRAPPED=false`, and `PILOT_D
 - PostgreSQL PITR and S3 recovery into isolated infrastructure, including timestamps and application checks.
 - ECS failed-deployment rollback, queue-depth scaling, worker termination, DLQ movement, and guarded replay.
 - API, database, queue, certificate, upload-failure, and budget alarm delivery.
+- Private-origin TLS validation, isolated tunnel task role, VPC flow-log delivery, and reviewed Cloudflare Tunnel egress exception.
 - RLS direct-database and application-level two-tenant denial.
 - Account IDs, plan hashes, workflow runs, image digests, migration IDs, restore timestamps, and acceptance hashes.
 

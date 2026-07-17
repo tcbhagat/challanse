@@ -53,6 +53,7 @@ git pull --ff-only
 ./scripts/go-live.sh rotate-signing
 ./scripts/go-live.sh configure-aws
 ./scripts/go-live.sh configure-enrichment
+./scripts/go-live.sh configure-tunnel-origin
 ./scripts/go-live.sh configure-play
 ./scripts/go-live.sh accept-staging /secure/staging-acceptance.json
 ./scripts/go-live.sh accept-android-field /secure/android-field-acceptance.json
@@ -66,7 +67,7 @@ git pull --ff-only
 
 The previously exposed keystore is revoked and must never be opened, copied, or reused. `rotate-signing` creates a new upload key outside the repository, records the revoked and active upload fingerprints, and preserves Google Play's separate app-signing fingerprint. Production builds AABs only; direct APK distribution is prohibited.
 
-`provision` is intentionally stateless: it configures Turnstile, reviewer Access, DNS, GitHub variables, and routing without creating D1, R2, or Cloudflare Queues. `configure-identity` permits one enterprise OIDC provider, forces MFA, and leaves PostgreSQL membership as the final authorization check.
+`provision` is intentionally stateless: it configures Turnstile, reviewer Access, DNS, GitHub variables, and routing without creating D1, R2, or Cloudflare Queues. `configure-identity` permits one enterprise OIDC provider, forces MFA, and leaves PostgreSQL membership as the final authorization check. After Terraform creates the private HTTPS ALB, `configure-tunnel-origin` sets Cloudflare Tunnel to validate its certificate with `api.challanse.constrovet.com` as the TLS server name; `noTLSVerify` is never enabled.
 
 ## Tenant onboarding
 

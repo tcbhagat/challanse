@@ -107,7 +107,29 @@ resource "aws_kms_key" "data" {
   description             = "${local.name} application and database encryption"
   deletion_window_in_days = 30
   enable_key_rotation     = true
-  tags                    = local.tags
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "AccountAdministration"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Action    = "kms:*"
+        Resource  = "*"
+      },
+      {
+        Sid       = "CloudWatchLogsEncryption"
+        Effect    = "Allow"
+        Principal = { Service = "logs.${var.aws_region}.amazonaws.com" }
+        Action    = ["kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:DescribeKey"]
+        Resource  = "*"
+        Condition = {
+          ArnLike = { "kms:EncryptionContext:aws:logs:arn" = "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*" }
+        }
+      }
+    ]
+  })
+  tags = local.tags
 }
 
 resource "aws_kms_alias" "data" {
@@ -447,6 +469,49 @@ resource "aws_cloudwatch_log_group" "service" {
   tags              = local.tags
 }
 
+resource "aws_cloudwatch_log_group" "vpc_flow" {
+  name              = "/vpc/${local.name}/flow"
+  retention_in_days = 30
+  kms_key_id        = aws_kms_key.data.arn
+  tags              = local.tags
+}
+
+resource "aws_iam_role" "vpc_flow_logs" {
+  name = "${local.name}-vpc-flow-logs"
+  assume_role_policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = [{ Effect = "Allow", Principal = { Service = "vpc-flow-logs.amazonaws.com" }, Action = "sts:AssumeRole" }]
+  })
+  tags = local.tags
+}
+
+resource "aws_iam_role_policy" "vpc_flow_logs" {
+  role = aws_iam_role.vpc_flow_logs.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:DescribeLogStreams", "logs:PutLogEvents"]
+        Resource = "${aws_cloudwatch_log_group.vpc_flow.arn}:*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["logs:DescribeLogGroups"]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_flow_log" "vpc" {
+  iam_role_arn    = aws_iam_role.vpc_flow_logs.arn
+  log_destination = aws_cloudwatch_log_group.vpc_flow.arn
+  traffic_type    = "ALL"
+  vpc_id          = aws_vpc.main.id
+  tags            = local.tags
+}
+
 resource "aws_iam_role" "task_execution" {
   name = "${local.name}-task-execution"
   assume_role_policy = jsonencode({
@@ -475,6 +540,15 @@ resource "aws_iam_role_policy" "task_execution_secrets" {
 
 resource "aws_iam_role" "task" {
   name = "${local.name}-task"
+  assume_role_policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = [{ Effect = "Allow", Principal = { Service = "ecs-tasks.amazonaws.com" }, Action = "sts:AssumeRole" }]
+  })
+  tags = local.tags
+}
+
+resource "aws_iam_role" "tunnel_task" {
+  name = "${local.name}-cloudflare-tunnel-task"
   assume_role_policy = jsonencode({
     Version   = "2012-10-17"
     Statement = [{ Effect = "Allow", Principal = { Service = "ecs-tasks.amazonaws.com" }, Action = "sts:AssumeRole" }]
@@ -543,8 +617,8 @@ resource "aws_security_group" "tunnel" {
 
 resource "aws_security_group_rule" "alb_from_tunnel" {
   type                     = "ingress"
-  from_port                = 8080
-  to_port                  = 8080
+  from_port                = 443
+  to_port                  = 443
   protocol                 = "tcp"
   security_group_id        = aws_security_group.alb.id
   source_security_group_id = aws_security_group.tunnel.id
@@ -553,14 +627,15 @@ resource "aws_security_group_rule" "alb_from_tunnel" {
 
 resource "aws_security_group_rule" "tunnel_to_alb" {
   type                     = "egress"
-  from_port                = 8080
-  to_port                  = 8080
+  from_port                = 443
+  to_port                  = 443
   protocol                 = "tcp"
   security_group_id        = aws_security_group.tunnel.id
   source_security_group_id = aws_security_group.alb.id
   description              = "Tunnel traffic to the private API load balancer"
 }
 
+#trivy:ignore:AVD-AWS-0104 Cloudflare publishes dynamic Tunnel endpoints; this isolated connector permits only TCP 443, has no application-data role, and is covered by VPC flow logs.
 resource "aws_security_group_rule" "tunnel_https_egress" {
   type              = "egress"
   from_port         = 443
@@ -696,10 +771,12 @@ resource "aws_lb_target_group" "api" {
   tags = local.tags
 }
 
-resource "aws_lb_listener" "private_http" {
+resource "aws_lb_listener" "private_https" {
   load_balancer_arn = aws_lb.api.arn
-  port              = 8080
-  protocol          = "HTTP"
+  port              = 443
+  protocol          = "HTTPS"
+  certificate_arn   = var.certificate_arn
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.api.arn
@@ -845,7 +922,7 @@ resource "aws_ecs_task_definition" "tunnel" {
   cpu                      = 256
   memory                   = 512
   execution_role_arn       = aws_iam_role.task_execution.arn
-  task_role_arn            = aws_iam_role.task.arn
+  task_role_arn            = aws_iam_role.tunnel_task.arn
   container_definitions = jsonencode([{
     name      = "cloudflared"
     image     = var.cloudflared_image
@@ -887,7 +964,7 @@ resource "aws_ecs_service" "api" {
     container_name   = "api"
     container_port   = 8080
   }
-  depends_on = [aws_lb_listener.private_http]
+  depends_on = [aws_lb_listener.private_https]
   tags       = local.tags
 }
 
@@ -1011,10 +1088,37 @@ resource "aws_iam_role_policy" "github_deploy" {
         Action = [
           "application-autoscaling:*", "backup:*", "budgets:*", "cloudwatch:*", "ec2:*",
           "ecr:*", "ecs:*", "elasticloadbalancing:*", "events:*", "kms:*", "logs:*",
-          "rds:*", "s3:*", "secretsmanager:*", "sns:*", "sqs:*", "tag:GetResources",
+          "rds:*", "secretsmanager:*", "sns:*", "sqs:*", "tag:GetResources",
           "tag:GetTagKeys", "tag:GetTagValues"
         ]
         Resource = "*"
+      },
+      {
+        Sid    = "ManageReceiptBucket"
+        Effect = "Allow"
+        Action = [
+          "s3:CreateBucket", "s3:DeleteBucket", "s3:GetBucketLocation", "s3:GetBucketPolicy",
+          "s3:PutBucketPolicy", "s3:DeleteBucketPolicy", "s3:GetBucketTagging", "s3:PutBucketTagging",
+          "s3:GetBucketVersioning", "s3:PutBucketVersioning", "s3:GetBucketNotification",
+          "s3:PutBucketNotification", "s3:GetEncryptionConfiguration", "s3:PutEncryptionConfiguration",
+          "s3:DeleteBucketEncryption", "s3:GetLifecycleConfiguration", "s3:PutLifecycleConfiguration",
+          "s3:GetBucketPublicAccessBlock", "s3:PutBucketPublicAccessBlock", "s3:DeleteBucketPublicAccessBlock",
+          "s3:GetBucketOwnershipControls", "s3:PutBucketOwnershipControls", "s3:DeleteBucketOwnershipControls",
+          "s3:ListBucket", "s3:ListBucketVersions"
+        ]
+        Resource = aws_s3_bucket.receipts.arn
+      },
+      {
+        Sid      = "ReadTerraformStateBucket"
+        Effect   = "Allow"
+        Action   = ["s3:GetBucketLocation", "s3:GetBucketVersioning", "s3:ListBucket"]
+        Resource = var.terraform_state_bucket_arn
+      },
+      {
+        Sid      = "ManageTerraformStateObjects"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+        Resource = "${var.terraform_state_bucket_arn}/*"
       },
       {
         Sid    = "ManageWorkloadRolesOnly"
@@ -1029,6 +1133,8 @@ resource "aws_iam_role_policy" "github_deploy" {
           "arn:aws:iam::*:role/${local.name}-backup",
           "arn:aws:iam::*:role/${local.name}-task-execution",
           "arn:aws:iam::*:role/${local.name}-task",
+          "arn:aws:iam::*:role/${local.name}-cloudflare-tunnel-task",
+          "arn:aws:iam::*:role/${local.name}-vpc-flow-logs",
           "arn:aws:iam::*:role/${local.name}-scheduled-jobs"
         ]
       },

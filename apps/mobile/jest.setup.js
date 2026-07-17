@@ -69,17 +69,6 @@ jest.mock('react-native-worklets', () => ({
 }));
 
 
-jest.mock('react-native-background-actions', () => ({
-  __esModule: true,
-  default: {
-    isRunning: jest.fn(() => false),
-    start: jest.fn(async () => undefined),
-    stop: jest.fn(async () => undefined),
-    updateNotification: jest.fn(async () => undefined),
-    on: jest.fn(),
-  },
-}));
-
 jest.mock('@react-native-community/netinfo', () => ({
   __esModule: true,
   default: {

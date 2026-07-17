@@ -15,6 +15,8 @@ module "enrichment" {
   container_image                     = var.container_image
   adot_collector_image                = var.adot_collector_image
   cloudflared_image                   = var.cloudflared_image
+  certificate_arn                     = var.certificate_arn
+  terraform_state_bucket_arn          = var.terraform_state_bucket_arn
   expected_aws_account_id             = var.expected_aws_account_id
   backup_destination_vault_arn        = var.backup_destination_vault_arn
   ocr_provider                        = "textract"
@@ -34,6 +36,8 @@ module "enrichment" {
 variable "container_image" { type = string }
 variable "adot_collector_image" { type = string }
 variable "cloudflared_image" { type = string }
+variable "certificate_arn" { type = string }
+variable "terraform_state_bucket_arn" { type = string }
 variable "expected_aws_account_id" { type = string }
 variable "backup_destination_vault_arn" { type = string }
 variable "play_integrity_cloud_project_number" { type = number }

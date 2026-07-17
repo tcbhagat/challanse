@@ -13,5 +13,6 @@ output "migration_task_definition_arn" { value = aws_ecs_task_definition.migrati
 output "private_subnet_ids" { value = aws_subnet.private[*].id }
 output "service_security_group_id" { value = aws_security_group.service.id }
 output "receipt_bucket_name" { value = aws_s3_bucket.receipts.id }
-output "private_origin_url" { value = "http://${aws_lb.api.dns_name}:8080" }
+output "private_origin_url" { value = "https://${aws_lb.api.dns_name}" }
+output "origin_server_name" { value = var.origin_server_name }
 output "backup_vault_arn" { value = aws_backup_vault.local.arn }

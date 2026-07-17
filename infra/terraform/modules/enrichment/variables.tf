@@ -47,6 +47,34 @@ variable "cloudflared_image" {
   }
 }
 
+variable "certificate_arn" {
+  type        = string
+  description = "ACM certificate used by the private HTTPS ALB listener. It must cover origin_server_name."
+  validation {
+    condition     = can(regex("^arn:aws:acm:ap-south-1:[0-9]{12}:certificate/[0-9a-f-]+$", var.certificate_arn))
+    error_message = "certificate_arn must be an ACM certificate ARN in ap-south-1"
+  }
+}
+
+variable "origin_server_name" {
+  type        = string
+  description = "TLS server name Cloudflare Tunnel must validate at the private ALB origin."
+  default     = "api.challanse.constrovet.com"
+  validation {
+    condition     = can(regex("^[a-z0-9.-]+\\.constrovet\\.com$", var.origin_server_name))
+    error_message = "origin_server_name must be a constrovet.com hostname"
+  }
+}
+
+variable "terraform_state_bucket_arn" {
+  type        = string
+  description = "Environment Terraform-state bucket ARN used to scope the GitHub deployment role."
+  validation {
+    condition     = can(regex("^arn:aws:s3:::[a-z0-9.-]+$", var.terraform_state_bucket_arn))
+    error_message = "terraform_state_bucket_arn must be an S3 bucket ARN"
+  }
+}
+
 variable "expected_aws_account_id" {
   type        = string
   description = "The environment account ID. Prevents applying production state in the wrong AWS account."

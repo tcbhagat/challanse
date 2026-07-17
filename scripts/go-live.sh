@@ -871,7 +871,7 @@ rotate_enrichment_keys() {
 configure_aws() {
   preflight
   local variables name label value
-  variables='AWS_PRODUCTION_ACCOUNT_ID AWS_PRODUCTION_TERRAFORM_ROLE_ARN AWS_ECR_REPOSITORY AWS_ADOT_COLLECTOR_IMAGE AWS_CLOUDFLARED_IMAGE AWS_TERRAFORM_STATE_BUCKET AWS_TERRAFORM_STATE_KMS_KEY_ARN AWS_BACKUP_DESTINATION_VAULT_ARN AWS_MONTHLY_BUDGET_USD AWS_BUDGET_EMAIL AWS_GITHUB_OIDC_PROVIDER_ARN'
+  variables='AWS_PRODUCTION_ACCOUNT_ID AWS_PRODUCTION_TERRAFORM_ROLE_ARN AWS_ECR_REPOSITORY AWS_ADOT_COLLECTOR_IMAGE AWS_CLOUDFLARED_IMAGE AWS_PRIVATE_ALB_CERTIFICATE_ARN AWS_TERRAFORM_STATE_BUCKET AWS_TERRAFORM_STATE_KMS_KEY_ARN AWS_BACKUP_DESTINATION_VAULT_ARN AWS_MONTHLY_BUDGET_USD AWS_BUDGET_EMAIL AWS_GITHUB_OIDC_PROVIDER_ARN'
   for name in $variables; do
     label="${name//_/ }"
     prompt_value "$name" "$label"
@@ -881,6 +881,38 @@ configure_aws() {
   gh variable set AWS_ENRICHMENT_BOOTSTRAPPED --repo "$REPO" --env production --body false
   gh variable set PILOT_DEPLOY_ENABLED --repo "$REPO" --body false
   printf '%s\n' 'AWS deployment variables are configured. Run the Terraform bootstrap with services_enabled=false, populate the AWS runtime secret, then set AWS_ENRICHMENT_BOOTSTRAPPED=true.'
+}
+
+configure_tunnel_origin() {
+  preflight
+  cloudflare_login
+  local tunnel_id private_origin_url current_config existing_config body response configured_service configured_server_name
+  prompt_value CLOUDFLARE_TUNNEL_ID "Cloudflare Tunnel ID"
+  prompt_value AWS_PRIVATE_ORIGIN_URL "Terraform private_origin_url output"
+  tunnel_id="$CLOUDFLARE_TUNNEL_ID"
+  private_origin_url="$AWS_PRIVATE_ORIGIN_URL"
+  [[ "$tunnel_id" =~ ^[0-9a-fA-F-]{36}$ ]] || die "Cloudflare Tunnel ID must be a UUID."
+  [[ "$private_origin_url" =~ ^https://[A-Za-z0-9.-]+\.elb\.amazonaws\.com$ ]] || die "Private origin must be the Terraform HTTPS ALB output."
+  current_config="$(cf GET "/accounts/$CLOUDFLARE_ACCOUNT_ID/cfd_tunnel/$tunnel_id/configurations")"
+  existing_config="$(jq -c '.result.config // {}' <<<"$current_config")"
+  body="$(jq -nc --argjson existing "$existing_config" --arg service "$private_origin_url" '
+    $existing
+    | .ingress = (
+        [(.ingress // [])[] | select((.hostname // "") != "api.challanse.constrovet.com" and ((.service // "") | startswith("http_status:") | not))]
+        + [{hostname:"api.challanse.constrovet.com",service:$service,originRequest:{originServerName:"api.challanse.constrovet.com",noTLSVerify:false}},{service:"http_status:404"}]
+      )
+    | {config:.}
+  ')"
+  response="$(cf PUT "/accounts/$CLOUDFLARE_ACCOUNT_ID/cfd_tunnel/$tunnel_id/configurations" "$body")"
+  configured_service="$(jq -r '.result.config.ingress[0].service // empty' <<<"$response")"
+  configured_server_name="$(jq -r '.result.config.ingress[0].originRequest.originServerName // empty' <<<"$response")"
+  [[ "$configured_service" == "$private_origin_url" && "$configured_server_name" == "api.challanse.constrovet.com" ]] || die "Cloudflare Tunnel did not retain the verified HTTPS origin configuration."
+  gh variable set CLOUDFLARE_TUNNEL_ID --repo "$REPO" --env production --body "$tunnel_id"
+  gh variable set AWS_PRIVATE_ORIGIN_URL --repo "$REPO" --env production --body "$private_origin_url"
+  gh variable set CLOUDFLARE_TUNNEL_ORIGIN_TLS_VERIFIED --repo "$REPO" --env production --body true
+  gh variable set PILOT_DEPLOY_ENABLED --repo "$REPO" --body false
+  unset CLOUDFLARE_API_TOKEN AWS_PRIVATE_ORIGIN_URL
+  printf '%s\n' 'Cloudflare Tunnel now validates the private ALB certificate for api.challanse.constrovet.com. Production remains disabled.'
 }
 
 rotate_signing() {
@@ -938,7 +970,7 @@ deploy() {
   preflight
   local required_secrets required_variables run_id pending ids body deployment_flag commit_sha confirmation github_fingerprint organization_count protection required_approvals
   required_secrets='["CLOUDFLARE_ACCOUNT_ID","CLOUDFLARE_API_TOKEN","DEVICE_TOKEN_PEPPER","TURNSTILE_SECRET","CHALLANSE_KEYSTORE_BASE64","CHALLANSE_KEYSTORE_PASSWORD","CHALLANSE_KEY_ALIAS","CHALLANSE_KEY_PASSWORD","PLAY_SERVICE_ACCOUNT_JSON","PLAY_MANAGED_ORGANIZATION_IDS","EDGE_TO_ENRICHMENT_HMAC_KEY","EDGE_TO_ENRICHMENT_NEXT_HMAC_KEY","ENRICHMENT_TO_EDGE_HMAC_KEY","ENRICHMENT_TO_EDGE_NEXT_HMAC_KEY","ENRICHMENT_ACCESS_CLIENT_ID","ENRICHMENT_ACCESS_CLIENT_SECRET"]'
-  required_variables='["CLOUDFLARE_ACCESS_TEAM_DOMAIN","CLOUDFLARE_ACCESS_AUD","CLOUDFLARE_FREE_WAF_ENABLED","ACCESS_IDENTITY_PROVIDER_ID","ACCESS_MFA_ENFORCED","TURNSTILE_SITE_KEY","CHALLANSE_UPLOAD_CERT_SHA256","CHALLANSE_PLAY_APP_SIGNING_CERT_SHA256","CHALLANSE_REVOKED_SIGNING_CERT_SHA256","PLAY_PUBLISH_ENABLED","PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER","PLAY_MANAGED_ORGANIZATIONS_SHA256","PLAY_MANAGED_ORGANIZATIONS_COUNT","PLAY_RELEASE_TRACK","ENRICHMENT_URL","EDGE_TO_ENRICHMENT_HMAC_KEY_ID","EDGE_TO_ENRICHMENT_NEXT_HMAC_KEY_ID","ENRICHMENT_TO_EDGE_HMAC_KEY_ID","ENRICHMENT_TO_EDGE_NEXT_HMAC_KEY_ID","AWS_PRODUCTION_ACCOUNT_ID","AWS_PRODUCTION_TERRAFORM_ROLE_ARN","AWS_ECR_REPOSITORY","AWS_ADOT_COLLECTOR_IMAGE","AWS_CLOUDFLARED_IMAGE","AWS_TERRAFORM_STATE_BUCKET","AWS_TERRAFORM_STATE_KMS_KEY_ARN","AWS_BACKUP_DESTINATION_VAULT_ARN","AWS_MONTHLY_BUDGET_USD","AWS_BUDGET_EMAIL","AWS_GITHUB_OIDC_PROVIDER_ARN","AWS_RUNTIME_SECRET_ARN","AWS_DEAD_LETTER_QUEUE_URL","AWS_ENRICHMENT_BOOTSTRAPPED","STAGING_ACCEPTANCE_SHA256","ANDROID_FIELD_ACCEPTANCE_SHA256","SECURITY_ACCEPTANCE_SHA256","CAPACITY_ACCEPTANCE_SHA256","RECOVERY_ACCEPTANCE_SHA256"]'
+  required_variables='["CLOUDFLARE_ACCESS_TEAM_DOMAIN","CLOUDFLARE_ACCESS_AUD","CLOUDFLARE_FREE_WAF_ENABLED","ACCESS_IDENTITY_PROVIDER_ID","ACCESS_MFA_ENFORCED","TURNSTILE_SITE_KEY","CHALLANSE_UPLOAD_CERT_SHA256","CHALLANSE_PLAY_APP_SIGNING_CERT_SHA256","CHALLANSE_REVOKED_SIGNING_CERT_SHA256","PLAY_PUBLISH_ENABLED","PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER","PLAY_MANAGED_ORGANIZATIONS_SHA256","PLAY_MANAGED_ORGANIZATIONS_COUNT","PLAY_RELEASE_TRACK","ENRICHMENT_URL","EDGE_TO_ENRICHMENT_HMAC_KEY_ID","EDGE_TO_ENRICHMENT_NEXT_HMAC_KEY_ID","ENRICHMENT_TO_EDGE_HMAC_KEY_ID","ENRICHMENT_TO_EDGE_NEXT_HMAC_KEY_ID","AWS_PRODUCTION_ACCOUNT_ID","AWS_PRODUCTION_TERRAFORM_ROLE_ARN","AWS_ECR_REPOSITORY","AWS_ADOT_COLLECTOR_IMAGE","AWS_CLOUDFLARED_IMAGE","AWS_PRIVATE_ALB_CERTIFICATE_ARN","AWS_TERRAFORM_STATE_BUCKET","AWS_TERRAFORM_STATE_KMS_KEY_ARN","AWS_BACKUP_DESTINATION_VAULT_ARN","AWS_MONTHLY_BUDGET_USD","AWS_BUDGET_EMAIL","AWS_GITHUB_OIDC_PROVIDER_ARN","AWS_RUNTIME_SECRET_ARN","AWS_DEAD_LETTER_QUEUE_URL","AWS_ENRICHMENT_BOOTSTRAPPED","CLOUDFLARE_TUNNEL_ID","AWS_PRIVATE_ORIGIN_URL","CLOUDFLARE_TUNNEL_ORIGIN_TLS_VERIFIED","STAGING_ACCEPTANCE_SHA256","ANDROID_FIELD_ACCEPTANCE_SHA256","SECURITY_ACCEPTANCE_SHA256","CAPACITY_ACCEPTANCE_SHA256","RECOVERY_ACCEPTANCE_SHA256"]'
   jq -e --argjson required "$required_secrets" '($required - [.[].name]) | length == 0' >/dev/null < <(gh secret list --repo "$REPO" --env production --json name) || die "Required production secrets are missing."
   jq -e --argjson required "$required_variables" '($required - [.[].name]) | length == 0' >/dev/null < <(gh variable list --repo "$REPO" --env production --json name) || die "Required production variables are missing."
   local revoked_fingerprint
@@ -947,6 +979,7 @@ deploy() {
   [[ -n "$revoked_fingerprint" && -n "$github_fingerprint" && "$revoked_fingerprint" != "$github_fingerprint" ]] || die "Rotate the exposed Android signing identity before deployment: ./scripts/go-live.sh rotate-signing"
   [[ "$(github_environment_variable ACCESS_MFA_ENFORCED)" == "true" ]] || die "Enterprise OIDC with MFA is not enforced. Run: ./scripts/go-live.sh configure-identity"
   [[ "$(github_environment_variable CLOUDFLARE_FREE_WAF_ENABLED)" == "true" ]] || die "Cloudflare Free Managed Ruleset is not recorded as enabled. Rerun provision."
+  [[ "$(github_environment_variable CLOUDFLARE_TUNNEL_ORIGIN_TLS_VERIFIED)" == "true" ]] || die "Cloudflare Tunnel origin TLS is not verified. Run configure-tunnel-origin after the private ALB exists."
   assert_free_managed_waf
   [[ "$(github_environment_variable PLAY_PUBLISH_ENABLED)" == "true" ]] || die "Managed Google Play publishing remains disabled. Run configure-play after Play Console setup."
   [[ "$(github_environment_variable PLAY_RELEASE_TRACK)" =~ ^(internal|alpha|production)$ ]] || die "Managed Google Play release track is invalid."
@@ -1282,6 +1315,7 @@ Usage: scripts/go-live.sh <command>
   configure-identity
   configure-github
   configure-enrichment
+  configure-tunnel-origin
   configure-play
   accept-client /secure/client-acceptance.json
   accept-operator-training /secure/operator-training.json
@@ -1315,6 +1349,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     configure-identity) configure_identity ;;
     configure-github) configure_github ;;
     configure-enrichment) configure_enrichment ;;
+    configure-tunnel-origin) configure_tunnel_origin ;;
     configure-play) configure_play ;;
     accept-client) accept_client "${2:-}" ;;
     accept-operator-training) accept_operator_training "${2:-}" ;;
