@@ -36,6 +36,10 @@ save_state() {
 }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"; }
+require_aws_deployment_unfrozen() {
+  need gh
+  [[ "$(gh variable get AWS_DEPLOYMENT_FROZEN --repo "$REPO" 2>/dev/null || true)" == "false" ]] || die "AWS_DEPLOYMENT_FROZEN must equal false before running AWS production commands."
+}
 confirm() { local answer; read -r -p "$1 Type YES: " answer; [[ "$answer" == "YES" ]] || die "Cancelled."; }
 prompt_secret() {
   local name="$1" label="$2" value
@@ -1402,6 +1406,11 @@ USAGE
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  case "${1:-}" in
+    configure-enrichment|configure-tunnel-origin|configure-aws|rotate-enrichment-keys|deploy|replay-dlq|seed)
+      require_aws_deployment_unfrozen
+      ;;
+  esac
   case "${1:-}" in
     dns-onboard) dns_onboard ;;
     dns-status) dns_status ;;

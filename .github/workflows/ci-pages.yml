@@ -142,7 +142,7 @@ jobs:
           AWS_DEFAULT_REGION: ap-south-1
 
   deploy-enrichment:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.PILOT_DEPLOY_ENABLED == 'true' && vars.AWS_ENRICHMENT_BOOTSTRAPPED == 'true'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.AWS_DEPLOYMENT_FROZEN != 'true' && vars.PILOT_DEPLOY_ENABLED == 'true' && vars.AWS_ENRICHMENT_BOOTSTRAPPED == 'true'
     needs: [validate, android, enrichment, security, integration, terraform-plan]
     runs-on: ubuntu-latest
     permissions:
@@ -238,7 +238,7 @@ jobs:
           if-no-files-found: error
 
   deploy-landing:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.PILOT_DEPLOY_ENABLED == 'true'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.AWS_DEPLOYMENT_FROZEN != 'true' && vars.PILOT_DEPLOY_ENABLED == 'true'
     needs: [validate, android, enrichment, security, integration, terraform-plan]
     runs-on: ubuntu-latest
     permissions:
@@ -268,7 +268,7 @@ jobs:
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5
 
   deploy-cloudflare:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.PILOT_DEPLOY_ENABLED == 'true'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.AWS_DEPLOYMENT_FROZEN != 'true' && vars.PILOT_DEPLOY_ENABLED == 'true'
     needs: [validate, android, enrichment, security, integration, terraform-plan, deploy-enrichment]
     runs-on: ubuntu-latest
     environment:
@@ -332,7 +332,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
   release-android:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.PILOT_DEPLOY_ENABLED == 'true' && vars.PLAY_PUBLISH_ENABLED == 'true'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.AWS_DEPLOYMENT_FROZEN != 'true' && vars.PILOT_DEPLOY_ENABLED == 'true' && vars.PLAY_PUBLISH_ENABLED == 'true'
     needs: [validate, android, enrichment, security, integration, terraform-plan, deploy-enrichment, deploy-cloudflare, deploy-landing]
     runs-on: ubuntu-latest
     permissions:

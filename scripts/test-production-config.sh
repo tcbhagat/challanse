@@ -26,8 +26,10 @@ bash -n scripts/rollback-production.sh
 bash -n scripts/test-turnstile-recovery.sh
 bash -n scripts/test-production-hardening.sh
 bash -n scripts/test-budget-controls.sh
+bash -n scripts/zero-cost-readiness.sh
+bash -n scripts/test-zero-cost-readiness.sh
 shellcheck -e SC1090 scripts/test-waf-provisioning.sh
-shellcheck -e SC1090 scripts/go-live.sh scripts/rollback-production.sh scripts/test-production-config.sh scripts/test-turnstile-recovery.sh scripts/test-production-hardening.sh scripts/test-budget-controls.sh
+shellcheck -e SC1090 scripts/go-live.sh scripts/rollback-production.sh scripts/test-production-config.sh scripts/test-turnstile-recovery.sh scripts/test-production-hardening.sh scripts/test-budget-controls.sh scripts/zero-cost-readiness.sh scripts/test-zero-cost-readiness.sh
 test -x scripts/go-live.sh
 test -x scripts/rollback-production.sh
 grep -Fq "VITE_API_BASE_URL: /api" .github/workflows/ci-pages.yml
@@ -70,6 +72,8 @@ grep -Fq 'PLAY_RELEASE_TRACK' scripts/go-live.sh
 grep -Fq 'CLIENT_ACCEPTANCE_SHA256' scripts/go-live.sh
 grep -Fq 'OPERATOR_TRAINING_SHA256' scripts/go-live.sh
 test -s docs/templates/operator-training.json
+test -s docs/aws-deployment-freeze.md
+grep -Fq 'AWS_DEPLOYMENT_FROZEN=true' docs/aws-deployment-freeze.md
 for acceptance in staging android-field client security capacity recovery; do
   test -s "docs/templates/${acceptance}-acceptance.json"
 done
@@ -89,6 +93,10 @@ if grep -E '^\s*- uses:' .github/workflows/ci-pages.yml | grep -Ev 'uses: [^[:sp
 fi
 grep -Fq 'AWS_ENRICHMENT_BOOTSTRAPPED == '\''true'\''' .github/workflows/ci-pages.yml
 grep -Fq 'PILOT_DEPLOY_ENABLED == '\''true'\''' .github/workflows/ci-pages.yml
+test "$(grep -c "vars.AWS_DEPLOYMENT_FROZEN != 'true'" .github/workflows/ci-pages.yml)" -eq 4
+grep -Fq 'AWS_DEPLOYMENT_FROZEN must equal false before running AWS production commands.' scripts/go-live.sh
+grep -Fq "AWS_DEPLOYMENT_FROZEN --repo \"\$REPO\" --body true" scripts/rollback-production.sh
+grep -Fq "AWS_ENRICHMENT_BOOTSTRAPPED --repo \"\$REPO\" --env production --body false" scripts/rollback-production.sh
 grep -Fq 'AWS_PRIVATE_ALB_CERTIFICATE_ARN' .github/workflows/ci-pages.yml
 grep -Fq 'AWS_PRODUCTION_MONTHLY_BUDGET_USD' .github/workflows/ci-pages.yml
 grep -Fq 'AWS_SECONDARY_BUDGET_EMAIL' .github/workflows/ci-pages.yml
@@ -166,6 +174,7 @@ access_lookup_line="$(grep -n 'access/organizations' scripts/go-live.sh | cut -d
 bash scripts/test-turnstile-recovery.sh
 bash scripts/test-production-hardening.sh
 bash scripts/test-budget-controls.sh
+bash scripts/test-zero-cost-readiness.sh
 bash scripts/test-waf-provisioning.sh
 bash scripts/test-ci-portability.sh
 if grep -RIn --include='*.sh' --exclude='test-production-config.sh' '\brg\b' scripts; then

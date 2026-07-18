@@ -93,13 +93,29 @@ Managed Google Play organization availability is configured in Play Console and 
 
 ## Release and operations
 
-Production remains disabled unless the guarded CLI temporarily sets `PILOT_DEPLOY_ENABLED=true`; it restores the variable to `false` on completion or failure. Protected `main` requires `validate`, `android`, `enrichment`, `security`, `integration`, and `terraform-plan`. Security, capacity, and recovery reports must reference hashed evidence artifacts and pass strict typed thresholds before deployment. Every release manifest records commit, workflow run, AAB checksum, upload and Play signing fingerprints, revoked fingerprint, SBOM, image digest, migrations, acceptance evidence, and deployed Worker versions.
+Production remains disabled unless the guarded CLI temporarily sets `PILOT_DEPLOY_ENABLED=true`; it restores the variable to `false` on completion or failure. AWS deployment is additionally blocked while `AWS_DEPLOYMENT_FROZEN=true`. Protected `main` requires `validate`, `android`, `enrichment`, `security`, `integration`, and `terraform-plan`. Security, capacity, and recovery reports must reference hashed evidence artifacts and pass strict typed thresholds before deployment. Every release manifest records commit, workflow run, AAB checksum, upload and Play signing fingerprints, revoked fingerprint, SBOM, image digest, migrations, acceptance evidence, and deployed Worker versions.
 
 Production OCR uses Textract. GST, credit, WhatsApp, Slack, and individual alerts fail closed and remain visibly disabled. Do not claim GST validation, automated statutory compliance, credit eligibility, OCR accuracy, savings, ISO certification, or DPDP legal compliance without independent evidence.
 
 Business-hours support is documented in `docs/pilot-runbook.md`; no 24×7 support is offered. Follow `docs/aws-bootstrap.md`, `docs/hybrid-enrichment.md`, `docs/release-readiness.md`, and `docs/pilot-runbook.md` before onboarding a client.
 
 The three-month pilot is governed by `docs/pilot-budget.md`: INR 450,000 total cash ceiling, INR 60,000 combined monthly cloud ceiling, separate staging/production budgets, two-operator alerts, and stop/reapproval gates. Passing technical checks does not authorize expenditure beyond those controls.
+
+## Zero-cost pre-client readiness
+
+Use the guarded zero-cost workflow before a client funds cloud infrastructure:
+
+```bash
+cd /home/taran/challanse-website
+./scripts/zero-cost-readiness.sh status
+./scripts/zero-cost-readiness.sh install-terraform
+./scripts/zero-cost-readiness.sh local-staging
+AWS_PROFILE=challanse-staging ./scripts/zero-cost-readiness.sh speculative-plan
+```
+
+AWS deployment is frozen from 2026-07-18 pending revised requirements and funding. Preserve existing AWS accounts and infrastructure code, but do not run Organization bootstrap, `terraform apply`, AWS configuration, tunnel configuration, deployment, seeding, replay, or production migration commands. Local staging uses synthetic PostgreSQL and LocalStack containers, then removes them. The speculative Terraform command uses no backend, performs no apply, and rejects the current NAT, ALB, RDS, and ECS design for a zero-cost target. Keep `PILOT_DEPLOY_ENABLED=false`, `AWS_ENRICHMENT_BOOTSTRAPPED=false`, and `AWS_DEPLOYMENT_FROZEN=true`.
+
+Reactivation requires approved client requirements, written cloud spending approval, confirmed AWS ownership and billing alerts, a reviewed Terraform estimate, passing signing and CI security gates, and an explicit change of `AWS_DEPLOYMENT_FROZEN` to `false` before the guarded typed deployment confirmation. If member accounts are needed later, use the verified Gmail plus-address variants recorded in `scripts/zero-cost-readiness.sh`; no Google Workspace aliases are required. See `docs/aws-deployment-freeze.md` for the preserved assets, prohibited commands, and reactivation gate.
 
 Emergency stop preserves server data and every device's local queue:
 
