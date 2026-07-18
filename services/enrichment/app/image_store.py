@@ -1,8 +1,7 @@
 from typing import Any
 
-import boto3
-
 from .config import Settings
+from .object_store import object_store_client
 from .schemas import ReceiptEvent
 
 
@@ -15,7 +14,14 @@ def delete_all_object_versions(s3: Any, bucket: str, object_key: str) -> None:
             request["VersionIdMarker"] = version_marker
         if key_marker:
             request["KeyMarker"] = key_marker
-        response = s3.list_object_versions(**request)
+        try:
+            response = s3.list_object_versions(**request)
+        except s3.exceptions.ClientError as error:
+            code = str(error.response.get("Error", {}).get("Code", ""))
+            if code not in {"NotImplemented", "MethodNotAllowed", "XNotImplemented"}:
+                raise
+            s3.delete_object(Bucket=bucket, Key=object_key)
+            return
         objects = [
             {"Key": item["Key"], "VersionId": item["VersionId"]}
             for item in [*response.get("Versions", []), *response.get("DeleteMarkers", [])]
@@ -35,7 +41,7 @@ def fetch_receipt_image(settings: Settings, event: ReceiptEvent, client: Any = N
     expected_prefix = f"{event.organization_id}/{event.site_id}/"
     if not event.image_key.startswith(expected_prefix) or not event.image_key.endswith(f"/{event.receipt_id}.webp"):
         raise RuntimeError("receipt_image_key_scope_invalid")
-    s3 = client or boto3.client("s3", region_name=settings.aws_region)
+    s3 = object_store_client(settings, client)
     response = s3.get_object(Bucket=settings.receipt_bucket, Key=event.image_key)
     metadata = response.get("Metadata", {})
     expected_metadata = {

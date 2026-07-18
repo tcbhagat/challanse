@@ -15,7 +15,8 @@
     "test": "jest --runInBand",
     "check": "tsc --noEmit",
     "build": "cd android && ./gradlew assembleDebug",
-    "build:release": "cd android && ./gradlew bundleRelease"
+    "build:release": "cd android && ./gradlew bundleRelease",
+    "build:local-pilot": "cd android && ./gradlew assembleLocalPilot"
   },
   "dependencies": {
     "@noble/hashes": "2.2.0",

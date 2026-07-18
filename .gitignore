@@ -11,9 +11,12 @@ apps/mobile/android/app/build/
 apps/mobile/android/build/
 apps/mobile/android/*.jks
 apps/mobile/android/*.keystore
+apps/mobile/android/app/src/localPilot/res/raw/*.crt
 apps/mobile/package-lock.json
 apps/edge/wrangler.generated.toml
 *.log
+artifacts/local-pilot/
+.local-runtime/
 __pycache__/
 *.py[cod]
 .pytest_cache/

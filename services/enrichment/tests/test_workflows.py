@@ -43,7 +43,14 @@ from app.jobs import apply_retention, generate_digests, generate_nightly_report,
 from app.main import app, get_ingress_store_dependency
 from app.notifications import DigestReceipt, aggregate_digests
 from app.outbox import dispatch_outbox_once
-from app.queueing import MemoryEventQueue, SqsEventQueue, get_event_queue
+from app.queueing import (
+    MemoryEventQueue,
+    PostgresEventQueue,
+    SqsEventQueue,
+    claim_local_message,
+    complete_local_message,
+    get_event_queue,
+)
 from app.reconciliation import (
     delta_rows,
     digest_history_for_site,
@@ -347,6 +354,34 @@ def test_s3_version_deletion_is_exact_and_paginated() -> None:
         {"Key": "tenant/site/image.webp", "VersionId": "v1"},
         {"Key": "tenant/site/image.webp", "VersionId": "marker"},
     ]
+
+
+@pytest.mark.integration
+def test_postgres_local_queue_is_durable_and_idempotent() -> None:
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("TEST_DATABASE_URL is not configured")
+    reset_test_database(database_url)
+    seed_test_organization(database_url)
+    event = ReceiptEvent(
+        receipt_id=RECEIPT_ID,
+        organization_id=ORGANIZATION_ID,
+        site_id=SITE_ID,
+        image_key=f"{ORGANIZATION_ID}/{SITE_ID}/receipts/{RECEIPT_ID}.webp",
+        vendor_id="vendor-1",
+        captured_at_unix=1_700_000_000,
+        site_captured_quantity=10,
+        image_sha256="a" * 64,
+        image_bytes=100,
+    )
+    queue = PostgresEventQueue(database_url)
+    first_id = queue.enqueue(event)
+    assert queue.enqueue(event) == first_id
+    claimed = claim_local_message(database_url)
+    assert claimed is not None
+    assert claimed.event == event
+    complete_local_message(database_url, claimed)
+    assert claim_local_message(database_url) is None
 
 
 def test_webp_integrity_and_in_memory_png_conversion() -> None:
@@ -987,7 +1022,7 @@ def test_digest_and_retention_jobs_are_idempotent(monkeypatch) -> None:
                 deleted_keys.append(key)
                 removed_keys.add(key)
 
-    monkeypatch.setattr("app.jobs.boto3.client", lambda *args, **kwargs: FakeS3())
+    monkeypatch.setattr("app.jobs.object_store_client", lambda *args, **kwargs: FakeS3())
     set_site_manager(database_url, ORGANIZATION_ID, SITE_ID, "manager@example.com", True)
     with tenant_connection(database_url, ORGANIZATION_ID) as connection:
         with connection.cursor() as cursor:

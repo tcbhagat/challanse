@@ -53,10 +53,12 @@ grep -Fq 'CHALLANSE_UPLOAD_CERT_SHA256' scripts/go-live.sh
 grep -Fq 'CHALLANSE_PLAY_APP_SIGNING_CERT_SHA256' scripts/go-live.sh
 grep -Fq 'PLAY_SERVICE_ACCOUNT_JSON' scripts/go-live.sh
 grep -Fq 'bundleRelease' apps/mobile/package.json
-if contains_forbidden -RInE --exclude='test-production-config.sh' 'assembleRelease|download-apk|app-release\.apk' .github scripts apps/mobile/package.json README.md docs/release-readiness.md; then
+if contains_forbidden -RInE --exclude='test-production-config.sh' --exclude='local-pilot.sh' 'assembleRelease|download-apk|app-release\.apk' .github scripts apps/mobile/package.json README.md docs/release-readiness.md; then
   echo "Production distribution must remain AAB-only through Managed Google Play." >&2
   exit 1
 fi
+grep -Fq 'applicationIdSuffix ".localpilot"' apps/mobile/android/app/build.gradle
+grep -Fq 'SYNTHETIC TEST' apps/mobile/src/PilotApp.tsx
 grep -Fq 'Type DEPLOY' scripts/go-live.sh
 grep -Fq 'https-status' scripts/go-live.sh
 grep -Fq 'harden-github' scripts/go-live.sh
@@ -113,6 +115,8 @@ grep -Fq 'STAGING_ACCEPTANCE_SHA256' scripts/go-live.sh
 grep -Fq 'ANDROID_FIELD_ACCEPTANCE_SHA256' scripts/go-live.sh
 grep -Fq '0005_production_tenancy.sql' .github/workflows/ci-pages.yml
 test -s services/enrichment/migrations/0005_production_tenancy.sql
+test -s services/enrichment/migrations/0006_local_pilot.sql
+grep -Fq 'local_receipt_queue' services/enrichment/migrations/0006_local_pilot.sql
 grep -Fq 'device_rate_limit_windows' services/enrichment/migrations/0005_production_tenancy.sql
 if grep -Fq 'CREATE UNIQUE INDEX IF NOT EXISTS users_email_idx' services/enrichment/migrations/0005_production_tenancy.sql; then
   echo "Email must remain an editable attribute, not an identity key." >&2

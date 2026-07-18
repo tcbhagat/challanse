@@ -36,8 +36,16 @@ export async function authenticateAccessIdentity(
   env: Env,
   verifyToken: typeof jwtVerify = jwtVerify,
 ): Promise<AccessIdentity | null> {
+  if (env.ENVIRONMENT === 'local-pilot' && env.LOCAL_REVIEWER_GATEWAY_SECRET) {
+    const gatewaySecret = request.headers.get('X-ChallanSe-Local-Reviewer-Secret') ?? '';
+    const email = (request.headers.get('X-ChallanSe-Local-Reviewer-Email') ?? '').trim().toLowerCase();
+    const allowedEmails = new Set((env.LOCAL_REVIEWER_EMAILS ?? '').split(',').map((value) => value.trim().toLowerCase()).filter(Boolean));
+    if (gatewaySecret === env.LOCAL_REVIEWER_GATEWAY_SECRET && allowedEmails.has(email)) {
+      return { issuer: 'https://local-pilot.challanse', subject: `local:${email}`, email };
+    }
+  }
   const token = request.headers.get('Cf-Access-Jwt-Assertion') ?? '';
-  const domain = env.ACCESS_TEAM_DOMAIN.trim().replace(/^https?:\/\//, '').replace(/\/$/, '');
+  const domain = (env.ACCESS_TEAM_DOMAIN ?? '').trim().replace(/^https?:\/\//, '').replace(/\/$/, '');
   if (!token || !domain || !env.ACCESS_AUD) return null;
   try {
     const expectedIssuer = `https://${domain}`;

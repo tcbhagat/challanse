@@ -34,7 +34,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     return new Response(null, { status: 204, headers: corsHeaders(request, env) });
   }
   if (request.method === 'GET' && path === '/health') {
-    return json(request, env, { status: 'ok', mode: 'aws-authoritative' });
+    return json(request, env, { status: 'ok', mode: env.ENVIRONMENT === 'local-pilot' ? 'local-synthetic' : 'aws-authoritative' });
   }
   if (request.method === 'GET' && path === '/ready') return proxyAuthoritativeRequest(request, env);
 
@@ -58,7 +58,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     return proxyAuthoritativeRequest(request, env, undefined, true);
   }
 
-  if (isAuthoritativeRoute(path)) return proxyAuthoritativeRequest(request, env);
+  if (isAuthoritativeRoute(path) || path === '/v1/local/status') return proxyAuthoritativeRequest(request, env);
   return error(request, env, 404, 'NOT_FOUND', 'The requested route does not exist.');
 }
 

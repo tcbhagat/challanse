@@ -35,8 +35,11 @@ class TenantBootstrap(BaseModel):
 
 def bootstrap_tenant(settings=None, payload: TenantBootstrap | None = None) -> dict[str, str]:
     settings = settings or get_settings()
-    if settings.environment != "production" or not settings.database_admin_url:
-        raise RuntimeError("tenant_bootstrap_requires_production_admin_database")
+    local_pilot = settings.environment == "local-pilot" and settings.synthetic_mode
+    if settings.environment != "production" and not local_pilot:
+        raise RuntimeError("tenant_bootstrap_requires_authorized_environment")
+    if not settings.database_admin_url:
+        raise RuntimeError("tenant_bootstrap_requires_admin_database")
     payload = payload or TenantBootstrap.model_validate_json(os.environ.get("TENANT_BOOTSTRAP_JSON", "{}"))
     if payload.confirmation != f"BOOTSTRAP {payload.organization_id}":
         raise RuntimeError("tenant_bootstrap_confirmation_invalid")
@@ -125,12 +128,12 @@ def bootstrap_tenant(settings=None, payload: TenantBootstrap | None = None) -> d
             """
             INSERT INTO audit_events
               (id, organization_id, site_id, event_type, actor_type, actor_id, event_json, source_class, event_hash)
-            VALUES (%s, %s, %s, 'TENANT_BOOTSTRAPPED', 'SYSTEM', 'guarded-cli', %s, 'aws-ecs', %s)
+            VALUES (%s, %s, %s, 'TENANT_BOOTSTRAPPED', 'SYSTEM', 'guarded-cli', %s, %s, %s)
             ON CONFLICT (id) DO NOTHING
             """,
             (
                 uuid5(NAMESPACE_URL, f"challanse-bootstrap:{payload.organization_id}:{payload.site_id}"),
-                payload.organization_id, payload.site_id, Jsonb(event_body), event_hash,
+                payload.organization_id, payload.site_id, Jsonb(event_body), "local-pilot" if local_pilot else "aws-ecs", event_hash,
             ),
         )
         connection.commit()

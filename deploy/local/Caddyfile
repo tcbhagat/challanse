@@ -1,0 +1,26 @@
+{
+  auto_https off
+  admin off
+}
+
+https://{$CHALLANSE_LAN_IP}:8443 {
+  tls /etc/challanse-tls/pilot.crt /etc/challanse-tls/pilot.key
+  reverse_proxy edge:8787
+}
+
+https://{$CHALLANSE_LAN_IP}:8444 {
+  tls /etc/challanse-tls/pilot.crt /etc/challanse-tls/pilot.key
+  forward_auth api:8080 {
+    uri /v1/local/auth
+    copy_headers WWW-Authenticate
+  }
+  handle_path /api/* {
+    reverse_proxy edge:8787 {
+      header_up X-ChallanSe-Local-Reviewer-Secret {$LOCAL_REVIEWER_GATEWAY_SECRET}
+      header_up X-ChallanSe-Local-Reviewer-Email {$LOCAL_REVIEWER_EMAIL}
+    }
+  }
+  root * /srv/reviewer
+  try_files {path} /index.html
+  file_server
+}

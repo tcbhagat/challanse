@@ -3,7 +3,6 @@ import logging
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-import boto3
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
@@ -12,6 +11,7 @@ from .notifications import DigestReceipt, aggregate_digests
 from .telemetry import SiteMetric, threshold_alerts
 from .schemas import TelemetryBatch
 from .image_store import delete_all_object_versions
+from .object_store import object_store_client
 from .tenancy import system_connection, tenant_connection
 
 
@@ -124,7 +124,7 @@ def generate_nightly_report(settings: Settings) -> list[str]:
 def cleanup_orphan_uploads(settings: Settings) -> int:
     if not settings.receipt_bucket:
         raise RuntimeError("receipt_bucket_unconfigured")
-    s3 = boto3.client("s3", region_name=settings.aws_region)
+    s3 = object_store_client(settings)
     with system_connection(settings.database_url, row_factory=dict_row) as connection:
         rows = connection.execute(
             """
@@ -211,7 +211,7 @@ def cleanup_orphan_uploads(settings: Settings) -> int:
 def apply_retention(settings: Settings) -> tuple[int, int]:
     if not settings.receipt_bucket:
         raise RuntimeError("receipt_bucket_unconfigured")
-    s3 = boto3.client("s3", region_name=settings.aws_region)
+    s3 = object_store_client(settings)
     with system_connection(settings.database_url, row_factory=dict_row) as connection:
         images = connection.execute(
             """

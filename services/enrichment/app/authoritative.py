@@ -1,5 +1,4 @@
 import csv
-import base64
 import hashlib
 import io
 import json
@@ -12,12 +11,13 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-import boto3
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from .config import Settings
 from .image_store import delete_all_object_versions
+from .object_store import object_encryption_headers, object_store_client
+from .local_storage import local_uploads_paused
 from .schemas import (
     EnrollmentRequest,
     MembershipAdminRequest,
@@ -216,7 +216,7 @@ def mobile_bootstrap(settings: Settings, device: DeviceContext) -> dict[str, Any
 def _s3(settings: Settings, client=None):
     if not settings.receipt_bucket:
         raise AuthoritativeError("RECEIPT_BUCKET_UNCONFIGURED", 503)
-    return client or boto3.client("s3", region_name=settings.aws_region)
+    return object_store_client(settings, client)
 
 
 def _s3_put(
@@ -228,22 +228,15 @@ def _s3_put(
     client=None,
     retention_tag: bool = False,
 ) -> None:
-    encryption_context = {
-        "organization_id": metadata.get("organization-id", "unknown"),
-        "site_id": metadata.get("site-id", "unknown"),
-        "object_key": key,
-    }
     request: dict[str, Any] = {
         "Bucket": settings.receipt_bucket,
         "Key": key,
         "Body": body,
         "ContentType": content_type,
         "CacheControl": "private, no-store",
-        "ServerSideEncryption": "aws:kms",
-        "SSEKMSKeyId": settings.kms_key_arn,
-        "SSEKMSEncryptionContext": base64.b64encode(json.dumps(encryption_context, separators=(",", ":")).encode()).decode(),
         "Metadata": metadata,
     }
+    request.update(object_encryption_headers(settings, key, metadata))
     if retention_tag:
         request["Tagging"] = "retention=receipt-image"
     _s3(settings, client).put_object(
@@ -262,6 +255,8 @@ def create_upload_session(
     request: UploadSessionRequest,
     integrity_status: str = "UNAVAILABLE",
 ) -> dict[str, Any]:
+    if local_uploads_paused(settings):
+        raise AuthoritativeError("LOCAL_STORAGE_LIMIT_REACHED", 507)
     with tenant_connection(settings.database_url, str(device.organization_id), row_factory=dict_row) as connection:
         receipt = connection.execute(
             """

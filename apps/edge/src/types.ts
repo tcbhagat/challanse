@@ -11,6 +11,8 @@ export interface Env {
   EDGE_TO_ENRICHMENT_NEXT_HMAC_KEY?: string;
   ENRICHMENT_ACCESS_CLIENT_ID?: string;
   ENRICHMENT_ACCESS_CLIENT_SECRET?: string;
+  LOCAL_REVIEWER_GATEWAY_SECRET?: string;
+  LOCAL_REVIEWER_EMAILS?: string;
 }
 
 export type AccessIdentity = {

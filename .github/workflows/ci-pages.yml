@@ -71,7 +71,7 @@ jobs:
       - run: python -m pip install --requirement requirements-dev.txt
       - run: python -m pytest -q
       - name: Validate PostgreSQL migrations
-        run: test -s migrations/0001_enrichment.sql && test -s migrations/0002_release_hardening.sql && test -s migrations/0003_operational_jobs.sql && test -s migrations/0004_replay_protection.sql && test -s migrations/0005_production_tenancy.sql && grep -q 'transactional_outbox' migrations/0005_production_tenancy.sql
+        run: test -s migrations/0001_enrichment.sql && test -s migrations/0002_release_hardening.sql && test -s migrations/0003_operational_jobs.sql && test -s migrations/0004_replay_protection.sql && test -s migrations/0005_production_tenancy.sql && test -s migrations/0006_local_pilot.sql && grep -q 'transactional_outbox' migrations/0005_production_tenancy.sql && grep -q 'local_receipt_queue' migrations/0006_local_pilot.sql
 
   security:
     runs-on: ubuntu-latest
@@ -152,7 +152,7 @@ jobs:
       name: production
     outputs:
       image_uri: ${{ steps.image.outputs.uri }}
-      migration: 0005_production_tenancy.sql
+      migration: 0006_local_pilot.sql
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: aws-actions/configure-aws-credentials@cabfdba3510de1431bac9dba27511d97497fc100 # v5
@@ -230,7 +230,7 @@ jobs:
         run: |
           bucket="$(terraform -chdir=infra/terraform/production output -raw receipt_bucket_name)"
           backup_vault="$(terraform -chdir=infra/terraform/production output -raw backup_vault_arn)"
-          jq -n --arg commit "$GITHUB_SHA" --arg image "${{ steps.image.outputs.uri }}" --arg region "ap-south-1" --arg migration "0005_production_tenancy.sql" --arg bucket "$bucket" --arg backup_vault "$backup_vault" '{commit_sha:$commit,image:$image,region:$region,migration:$migration,receipt_bucket:$bucket,backup_vault:$backup_vault,origin_exposure:"cloudflare-tunnel-private-alb",providers:{ocr:"textract",gst:"disabled",notifications:"disabled",credit:"disabled",slack:"disabled"}}' > enrichment-deployment.json
+          jq -n --arg commit "$GITHUB_SHA" --arg image "${{ steps.image.outputs.uri }}" --arg region "ap-south-1" --arg migration "0006_local_pilot.sql" --arg bucket "$bucket" --arg backup_vault "$backup_vault" '{commit_sha:$commit,image:$image,region:$region,migration:$migration,receipt_bucket:$bucket,backup_vault:$backup_vault,origin_exposure:"cloudflare-tunnel-private-alb",providers:{ocr:"textract",gst:"disabled",notifications:"disabled",credit:"disabled",slack:"disabled"}}' > enrichment-deployment.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: challanse-enrichment-deployment

@@ -1,0 +1,448 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO="tcbhagat/challanse"
+CONFIG_ROOT="${XDG_CONFIG_HOME:-$HOME/.config}/challanse-local"
+ENV_FILE="$CONFIG_ROOT/local.env"
+EDGE_VARS="$CONFIG_ROOT/edge.dev.vars"
+REVIEWER_VARS="$CONFIG_ROOT/reviewer.dev.vars"
+TLS_DIR="$CONFIG_ROOT/tls"
+DATA_ROOT="/srv/challanse"
+COMPOSE_FILE="$ROOT/deploy/local/docker-compose.yml"
+RUNTIME_ROOT="$ROOT/.local-runtime"
+DEVICE="/dev/sda2"
+MAPPER_NAME="challanse-local"
+
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"; }
+confirm_phrase() {
+  local prompt="$1" expected="$2" answer
+  read -r -p "$prompt Type $expected: " answer
+  [[ "$answer" == "$expected" ]] || die "Cancelled. Nothing was changed."
+}
+repo_var() { gh variable get "$1" --repo "$REPO" 2>/dev/null || true; }
+require_aws_freeze() {
+  need gh
+  [[ "$(repo_var AWS_DEPLOYMENT_FROZEN)" == "true" ]] || die "AWS_DEPLOYMENT_FROZEN must equal true. Local pilot startup is blocked."
+  [[ "$(repo_var PILOT_DEPLOY_ENABLED)" == "false" ]] || die "PILOT_DEPLOY_ENABLED must equal false."
+}
+local_ip() {
+  ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}'
+}
+load_env() {
+  [[ -f "$ENV_FILE" ]] || die "Local pilot is not provisioned. Run: ./scripts/local-pilot.sh provision"
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+  export CHALLANSE_CONFIG_ROOT="$CONFIG_ROOT" CHALLANSE_DATA_ROOT="$DATA_ROOT" CHALLANSE_RUNTIME_ROOT="$RUNTIME_ROOT"
+  mkdir -p "$RUNTIME_ROOT/tls"
+  chmod 700 "$RUNTIME_ROOT" "$RUNTIME_ROOT/tls"
+  cp "$EDGE_VARS" "$RUNTIME_ROOT/edge.dev.vars"
+  cp "$REVIEWER_VARS" "$RUNTIME_ROOT/reviewer.dev.vars"
+  cp "$TLS_DIR"/*.crt "$TLS_DIR"/*.key "$RUNTIME_ROOT/tls/"
+  chmod 600 "$RUNTIME_ROOT"/*.vars "$RUNTIME_ROOT/tls"/*.key
+}
+compose() {
+  load_env
+  docker compose -f "$COMPOSE_FILE" "$@"
+}
+require_encrypted_storage() {
+  local source type
+  [[ -d "$DATA_ROOT" ]] || die "$DATA_ROOT does not exist. Run storage-audit, then storage-prepare only after backup approval."
+  source="$(findmnt -n -o SOURCE --target "$DATA_ROOT" 2>/dev/null || true)"
+  [[ "$source" == "/dev/mapper/$MAPPER_NAME" ]] || die "$DATA_ROOT is not mounted from /dev/mapper/$MAPPER_NAME."
+  type="$(lsblk -dn -o TYPE "$source" 2>/dev/null || true)"
+  [[ "$type" == "crypt" ]] || die "$DATA_ROOT is not backed by an active LUKS mapping."
+}
+require_firewall() {
+  grep -q '^ENABLED=yes' /etc/ufw/ufw.conf 2>/dev/null || die "UFW is not active. Run firewall-prepare after reviewing its rules."
+  local subnet
+  subnet="$(ip -4 route show scope link | awk '$1 ~ /^[0-9]+\./ && $1 !~ /^172\./ {print $1; exit}')"
+  [[ -n "$subnet" ]] || die "Local subnet could not be detected."
+  local status
+  status="$(sudo ufw status)"
+  grep -F "$subnet" <<<"$status" | grep -q '8443' || die "UFW has no port 8443 rule for subnet $subnet. Run firewall-prepare."
+  grep -F "$subnet" <<<"$status" | grep -q '8444' || die "UFW has no port 8444 rule for subnet $subnet. Run firewall-prepare."
+}
+check_port_free() {
+  local port="$1"
+  if ss -H -ltn "sport = :$port" 2>/dev/null | grep -q .; then
+    die "Port $port is already in use. Stop the conflicting service first."
+  fi
+}
+preflight() {
+  require_aws_freeze
+  local command
+  for command in docker curl jq openssl python3 npm ip ss lsblk findmnt sha256sum keytool ufw; do need "$command"; done
+  docker info >/dev/null 2>&1 || die "Docker is not running or your user cannot access it."
+  curl -fsS http://127.0.0.1:11434/api/tags | jq -e '.models[] | select(.name == "qwen2.5:7b")' >/dev/null \
+    || die "Ollama model qwen2.5:7b is not available. Run: ollama pull qwen2.5:7b"
+  need tesseract
+  tesseract --list-langs 2>/dev/null | grep -qx eng || die "Tesseract English language data is missing."
+  if ! tesseract --list-langs 2>/dev/null | grep -qx hin; then
+    printf 'WARNING: Host Hindi Tesseract data is missing; the local container includes it.\n' >&2
+  fi
+  [[ "$(awk '/MemTotal/ {print int($2/1024/1024)}' /proc/meminfo)" -ge 24 ]] || die "At least 24 GB RAM is required for this supervised pilot."
+  local android_sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}}"
+  [[ -d "$android_sdk/platforms/android-36" && -d "$android_sdk/build-tools/36.0.0" && -d "$android_sdk/ndk/27.1.12297006" ]] \
+    || die "Android SDK 36, Build Tools 36.0.0, and NDK 27.1.12297006 are required before provisioning."
+  export ANDROID_HOME="$android_sdk" ANDROID_SDK_ROOT="$android_sdk"
+  check_port_free 8443
+  check_port_free 8444
+  if ! grep -q '^ENABLED=yes' /etc/ufw/ufw.conf 2>/dev/null; then
+    printf 'WARNING: UFW is disabled. Startup will remain blocked until firewall-prepare succeeds.\n' >&2
+  fi
+  printf 'Preflight passed. AWS deployment is frozen and the approved local model is available.\n'
+}
+firewall_prepare() {
+  require_aws_freeze
+  need ufw; need ip
+  local subnet
+  subnet="$(ip -4 route show scope link | awk '$1 ~ /^[0-9]+\./ && $1 !~ /^172\./ {print $1; exit}')"
+  [[ -n "$subnet" ]] || die "Local subnet could not be detected."
+  printf 'This will deny unsolicited inbound traffic, preserve outbound traffic, and allow pilot ports only from %s.\n' "$subnet"
+  confirm_phrase "Review existing firewall rules before continuing. " "CONFIGURE-LOCAL-PILOT-FIREWALL"
+  sudo ufw default deny incoming
+  sudo ufw default allow outgoing
+  if [[ -n "${SSH_CONNECTION:-}" ]]; then sudo ufw allow from "$subnet" to any port 22 proto tcp; fi
+  sudo ufw allow from "$subnet" to any port 8443 proto tcp
+  sudo ufw allow from "$subnet" to any port 8444 proto tcp
+  sudo ufw --force enable
+  sudo ufw status numbered
+}
+storage_audit() {
+  need lsblk; need findmnt; need blkid
+  [[ -b "$DEVICE" ]] || die "$DEVICE was not found. No storage action was taken."
+  printf 'Read-only storage inventory for %s:\n' "$DEVICE"
+  lsblk -o NAME,PATH,SIZE,TYPE,FSTYPE,FSVER,LABEL,UUID,MOUNTPOINTS "$DEVICE"
+  blkid "$DEVICE" || true
+  if findmnt -rn -S "$DEVICE" >/dev/null 2>&1; then
+    printf 'WARNING: %s is mounted. It will not be modified.\n' "$DEVICE"
+  else
+    printf '%s is not mounted. No filesystem content was opened or changed.\n' "$DEVICE"
+  fi
+  if findmnt -rn -T "$DATA_ROOT" >/dev/null 2>&1; then
+    findmnt -o SOURCE,TARGET,FSTYPE,OPTIONS --target "$DATA_ROOT"
+  fi
+}
+storage_prepare() {
+  require_aws_freeze
+  need cryptsetup; need mkfs.ext4; need lsblk; need findmnt
+  [[ -b "$DEVICE" ]] || die "$DEVICE was not found."
+  [[ "$(findmnt -rn -o SOURCE / 2>/dev/null)" != "$DEVICE" ]] || die "Refusing to modify the root filesystem."
+  ! findmnt -rn -S "$DEVICE" >/dev/null 2>&1 || die "$DEVICE is mounted. Unmount it and audit it first."
+  storage_audit
+  printf '%s\n' 'DANGER: the next confirmed operation permanently erases every file on /dev/sda2.'
+  confirm_phrase "Confirm that its contents are backed up and disposable. " "ERASE-/dev/sda2-FOR-SYNTHETIC-CHALLANSE"
+  sudo cryptsetup luksFormat --type luks2 "$DEVICE"
+  sudo cryptsetup open "$DEVICE" "$MAPPER_NAME"
+  sudo mkfs.ext4 -L challanse-local "/dev/mapper/$MAPPER_NAME"
+  sudo mkdir -p "$DATA_ROOT"
+  sudo mount "/dev/mapper/$MAPPER_NAME" "$DATA_ROOT"
+  sudo chown "$USER":"$(id -gn)" "$DATA_ROOT"
+  printf 'Encrypted storage is mounted for this supervised session. It was not added to automatic startup.\n'
+}
+write_secret_files() {
+  local lan_ip="$1" reviewer_password reviewer_password_confirm
+  mkdir -p "$CONFIG_ROOT" "$TLS_DIR"
+  chmod 700 "$CONFIG_ROOT" "$TLS_DIR"
+  read -r -s -p 'Create a local reviewer password: ' reviewer_password; printf '\n'
+  read -r -s -p 'Repeat the local reviewer password: ' reviewer_password_confirm; printf '\n'
+  [[ -n "$reviewer_password" && "$reviewer_password" == "$reviewer_password_confirm" ]] || die "Reviewer passwords did not match."
+  local admin_password app_password system_password minio_password pepper tenant_key hmac_key gateway_secret reviewer_hash
+  admin_password="$(openssl rand -hex 24)"
+  app_password="$(openssl rand -hex 24)"
+  system_password="$(openssl rand -hex 24)"
+  minio_password="$(openssl rand -hex 24)"
+  pepper="$(openssl rand -hex 32)"
+  tenant_key="$(openssl rand -hex 32)"
+  hmac_key="$(openssl rand -hex 32)"
+  gateway_secret="$(openssl rand -hex 32)"
+  reviewer_hash="$(printf '%s' "$reviewer_password" | sha256sum | awk '{print $1}')"
+  unset reviewer_password reviewer_password_confirm
+  cat >"$ENV_FILE" <<EOF
+AWS_DEPLOYMENT_FROZEN=true
+ENVIRONMENT=local-pilot
+SYNTHETIC_MODE=true
+POSTGRES_DB=challanse_local
+POSTGRES_USER=challanse_admin
+POSTGRES_ADMIN_PASSWORD=$admin_password
+DATABASE_ADMIN_URL=postgresql://challanse_admin:$admin_password@postgres:5432/challanse_local
+DATABASE_URL=postgresql://challanse_app:$app_password@postgres:5432/challanse_local
+SYSTEM_DATABASE_URL=postgresql://challanse_system:$system_password@postgres:5432/challanse_local
+DATABASE_APP_PASSWORD=$app_password
+DATABASE_SYSTEM_PASSWORD=$system_password
+TENANT_CONTEXT_HMAC_KEY=$tenant_key
+DEVICE_TOKEN_PEPPER=$pepper
+EDGE_TO_ENRICHMENT_HMAC_KEY_ID=local-current
+EDGE_TO_ENRICHMENT_HMAC_KEY=$hmac_key
+RECEIPT_BUCKET=challanse-receipts
+OBJECT_STORE_ENDPOINT=http://minio:9000
+OBJECT_STORE_ACCESS_KEY=challanse-local
+OBJECT_STORE_SECRET_KEY=$minio_password
+OBJECT_STORE_SSE_MODE=none
+MINIO_ROOT_USER=challanse-local
+MINIO_ROOT_PASSWORD=$minio_password
+EVENT_QUEUE_PROVIDER=postgres
+OCR_PROVIDER=local
+GST_PROVIDER=disabled
+NOTIFICATION_PROVIDER=disabled
+CREDIT_PROVIDER=disabled
+SLACK_PROVIDER=disabled
+OLLAMA_URL=http://host.docker.internal:11434
+OLLAMA_MODEL=qwen2.5:7b
+OLLAMA_TIMEOUT_SECONDS=90
+TESSERACT_LANGUAGES=eng+hin
+LOCAL_DATA_ROOT=$DATA_ROOT
+LOCAL_STORAGE_LIMIT_BYTES=20000000000
+LOCAL_REVIEWER_PASSWORD_SHA256=$reviewer_hash
+LOCAL_REVIEWER_GATEWAY_SECRET=$gateway_secret
+LOCAL_REVIEWER_EMAIL=admin@constrovet.com
+LOCAL_REVIEWER_EMAILS=admin@constrovet.com,bhagat.taran@gmail.com
+CHALLANSE_LAN_IP=$lan_ip
+PUBLIC_API_URL=https://$lan_ip:8443
+REVIEW_DASHBOARD_URL=https://$lan_ip:8444
+PLAY_INTEGRITY_PROVIDER=disabled
+EOF
+  cat >"$EDGE_VARS" <<EOF
+ALLOWED_ORIGINS=https://$lan_ip:8444
+ACCESS_TEAM_DOMAIN=
+ACCESS_AUD=
+TURNSTILE_SECRET=
+ENVIRONMENT=local-pilot
+ENRICHMENT_URL=http://api:8080
+EDGE_TO_ENRICHMENT_HMAC_KEY_ID=local-current
+EDGE_TO_ENRICHMENT_HMAC_KEY=$hmac_key
+LOCAL_REVIEWER_GATEWAY_SECRET=$gateway_secret
+LOCAL_REVIEWER_EMAILS=admin@constrovet.com,bhagat.taran@gmail.com
+EOF
+  printf 'API_ORIGIN=http://edge:8787\n' >"$REVIEWER_VARS"
+  chmod 600 "$ENV_FILE" "$EDGE_VARS" "$REVIEWER_VARS"
+}
+generate_ca() {
+  local lan_ip="$1"
+  openssl genrsa -out "$TLS_DIR/pilot-ca.key" 4096 >/dev/null 2>&1
+  openssl req -x509 -new -key "$TLS_DIR/pilot-ca.key" -sha256 -days 365 \
+    -subj '/CN=ChallanSe Synthetic Pilot CA' -out "$TLS_DIR/pilot-ca.crt"
+  openssl genrsa -out "$TLS_DIR/pilot.key" 3072 >/dev/null 2>&1
+  openssl req -new -key "$TLS_DIR/pilot.key" -subj '/CN=ChallanSe Local Pilot' -out "$TLS_DIR/pilot.csr"
+  cat >"$TLS_DIR/pilot.ext" <<EOF
+subjectAltName=IP:$lan_ip,DNS:api.local.challanse.test,DNS:review.local.challanse.test
+keyUsage=digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+EOF
+  openssl x509 -req -in "$TLS_DIR/pilot.csr" -CA "$TLS_DIR/pilot-ca.crt" -CAkey "$TLS_DIR/pilot-ca.key" \
+    -CAcreateserial -out "$TLS_DIR/pilot.crt" -days 365 -sha256 -extfile "$TLS_DIR/pilot.ext" >/dev/null 2>&1
+  rm -f "$TLS_DIR/pilot.csr" "$TLS_DIR/pilot-ca.srl" "$TLS_DIR/pilot.ext"
+  chmod 600 "$TLS_DIR"/*.key
+  chmod 644 "$TLS_DIR"/*.crt
+}
+provision() {
+  preflight
+  require_encrypted_storage
+  local lan_ip
+  lan_ip="$(local_ip)"
+  [[ -n "$lan_ip" ]] || die "A fixed LAN IPv4 address could not be detected."
+  [[ ! -e "$ENV_FILE" ]] || die "Local pilot secrets already exist. Run destroy only if you intend to recreate them."
+  mkdir -p "$DATA_ROOT"/{postgres,images,exports,backups,fixtures}
+  sudo chown -R 999:999 "$DATA_ROOT/postgres"
+  sudo chown -R 1000:1000 "$DATA_ROOT/images"
+  chown -R "$USER":"$(id -gn)" "$DATA_ROOT"/{exports,backups,fixtures}
+  write_secret_files "$lan_ip"
+  generate_ca "$lan_ip"
+  cp "$TLS_DIR/pilot-ca.crt" "$ROOT/apps/mobile/android/app/src/localPilot/res/raw/challanse_pilot_ca.crt"
+  python3 "$ROOT/scripts/generate-local-fixtures.py" "$DATA_ROOT/fixtures"
+  (cd "$ROOT" && npm run build --workspace @challanse/reviewer)
+  (cd "$ROOT" && npm run build:local-pilot --workspace @challanse/mobile)
+  compose build
+  printf 'Provisioning complete. Secrets are stored with mode 600 under %s.\n' "$CONFIG_ROOT"
+}
+prewarm() {
+  load_env
+  curl -fsS --max-time 120 "http://127.0.0.1:11434/api/generate" \
+    -H 'Content-Type: application/json' \
+    --data "$(jq -nc --arg model "$OLLAMA_MODEL" '{model:$model,prompt:"Reply with exactly READY.",stream:false,keep_alive:"30m",options:{temperature:0,num_predict:4}}')" \
+    | jq -e '.model != null' >/dev/null
+}
+start_stack() {
+  require_aws_freeze
+  require_encrypted_storage
+  require_firewall
+  local mode="${1:---lan}"
+  load_env
+  [[ "$(local_ip)" == "$CHALLANSE_LAN_IP" ]] || die "LAN IP changed. Reissue the pilot certificate before startup."
+  if [[ "$mode" == "--both" ]]; then
+    if [[ -z "${TUNNEL_TOKEN:-}" ]]; then
+      read -r -s -p 'Cloudflare pilot tunnel token: ' TUNNEL_TOKEN; printf '\n'
+      [[ -n "$TUNNEL_TOKEN" ]] || die "Tunnel token is required for --both."
+      printf 'TUNNEL_TOKEN=%s\n' "$TUNNEL_TOKEN" >>"$ENV_FILE"
+      chmod 600 "$ENV_FILE"
+      export TUNNEL_TOKEN
+    fi
+    if [[ -z "${ACCESS_TEAM_DOMAIN:-}" ]]; then
+      read -r -p 'Cloudflare Access team domain (for example team.cloudflareaccess.com): ' ACCESS_TEAM_DOMAIN
+      [[ -n "$ACCESS_TEAM_DOMAIN" ]] || die "Access team domain is required for remote reviewer mode."
+      printf 'ACCESS_TEAM_DOMAIN=%s\n' "$ACCESS_TEAM_DOMAIN" >>"$ENV_FILE"
+    fi
+    if [[ -z "${PILOT_ACCESS_AUD:-}" ]]; then
+      read -r -s -p 'Cloudflare Access application audience: ' PILOT_ACCESS_AUD; printf '\n'
+      [[ -n "$PILOT_ACCESS_AUD" ]] || die "Access audience is required for remote reviewer mode."
+      printf 'PILOT_ACCESS_AUD=%s\n' "$PILOT_ACCESS_AUD" >>"$ENV_FILE"
+    fi
+    sed -i "s|^ACCESS_TEAM_DOMAIN=.*|ACCESS_TEAM_DOMAIN=$ACCESS_TEAM_DOMAIN|; s|^ACCESS_AUD=.*|ACCESS_AUD=$PILOT_ACCESS_AUD|" "$EDGE_VARS"
+    chmod 600 "$ENV_FILE" "$EDGE_VARS"
+    compose --profile remote up -d
+  elif [[ "$mode" == "--lan" ]]; then
+    compose up -d
+  else
+    die "Use start --lan or start --both."
+  fi
+  prewarm
+  for _ in $(seq 1 60); do
+    if curl -fsS --cacert "$TLS_DIR/pilot-ca.crt" "https://$CHALLANSE_LAN_IP:8443/health" >/dev/null 2>&1; then
+      printf 'GREEN: ChallanSe synthetic pilot is ready on LAN.\nReviewer: https://%s:8444\n' "$CHALLANSE_LAN_IP"
+      return
+    fi
+    sleep 2
+  done
+  compose ps
+  die "Local pilot did not become ready. Run: ./scripts/local-pilot.sh status"
+}
+seed() {
+  require_encrypted_storage
+  compose exec -T api python -m app.local_seed
+  printf 'Synthetic site, four vendors, two reviewers, and Tally data are seeded.\n'
+}
+enroll() {
+  load_env
+  local output code api_base link device_name
+  read -r -p 'Device name [Synthetic Pilot Device]: ' device_name
+  device_name="${device_name:-Synthetic Pilot Device}"
+  output="$(compose exec -T -e LOCAL_DEVICE_NAME="$device_name" api python -m app.local_enroll)"
+  code="$(sed -n 's/^enrollment_code=\([^ ]*\).*/\1/p' <<<"$output")"
+  [[ -n "$code" ]] || die "Enrollment code could not be generated."
+  api_base="https://$CHALLANSE_LAN_IP:8443"
+  link="challanse-local://enroll?api=$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$api_base")&code=$code"
+  printf 'Enrollment expires in 10 minutes. Open this link on the pilot device:\n%s\n' "$link"
+}
+status_cmd() {
+  require_aws_freeze
+  load_env
+  local failed=0
+  compose ps
+  printf '\nLocal service status:\n'
+  compose exec -T api python -c 'import json; from app.config import get_settings; from app.local_admin import local_status; print(json.dumps(local_status(get_settings()), indent=2))' || failed=1
+  if [[ "$failed" -eq 0 ]]; then
+    printf 'GREEN: synthetic local pilot services are ready.\n'
+  else
+    printf 'RED: one or more local pilot checks failed.\n' >&2
+    return 1
+  fi
+}
+download_apk() {
+  local apk="$ROOT/apps/mobile/android/app/build/outputs/apk/localPilot/app-localPilot.apk"
+  [[ -f "$apk" ]] || die "Local pilot APK is not built yet."
+  mkdir -p "$ROOT/artifacts/local-pilot"
+  cp "$apk" "$ROOT/artifacts/local-pilot/ChallanSe-Local-Pilot.apk"
+  sha256sum "$ROOT/artifacts/local-pilot/ChallanSe-Local-Pilot.apk"
+}
+acceptance() {
+  load_env
+  local output code report
+  output="$(compose exec -T -e LOCAL_DEVICE_NAME='Acceptance Device' api python -m app.local_enroll)"
+  code="$(sed -n 's/^enrollment_code=\([^ ]*\).*/\1/p' <<<"$output")"
+  [[ -n "$code" ]] || die "Acceptance enrollment code could not be generated."
+  report="$DATA_ROOT/exports/local-acceptance-$(date -u +%Y%m%dT%H%M%SZ).json"
+  LOCAL_API_BASE_URL="https://$CHALLANSE_LAN_IP:8443" \
+  LOCAL_ENROLLMENT_CODE="$code" \
+  LOCAL_FIXTURE_DIR="$DATA_ROOT/fixtures" \
+  LOCAL_CA_FILE="$TLS_DIR/pilot-ca.crt" \
+  LOCAL_ACCEPTANCE_OUTPUT="$report" \
+    python3 "$ROOT/scripts/run-local-acceptance.py"
+  printf 'Acceptance report: %s\n' "$report"
+}
+evidence() {
+  load_env
+  local timestamp directory apk
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  directory="$DATA_ROOT/exports/evidence-$timestamp"
+  mkdir -p "$directory"
+  git rev-parse HEAD >"$directory/commit-sha.txt"
+  docker compose -f "$COMPOSE_FILE" images --format json >"$directory/container-images.json"
+  ollama list >"$directory/ollama-models.txt"
+  tesseract --version >"$directory/tesseract-version.txt" 2>&1
+  compose exec -T api tesseract --list-langs >"$directory/container-ocr-languages.txt" 2>&1
+  apk="$ROOT/apps/mobile/android/app/build/outputs/apk/localPilot/app-localPilot.apk"
+  if [[ -f "$apk" ]]; then sha256sum "$apk" >"$directory/apk-sha256.txt"; fi
+  cat >"$directory/limitations.txt" <<'EOF'
+SYNTHETIC DATA ONLY.
+Supervised demonstration only; no uptime SLA or unattended availability.
+Local OCR and normalization results are not statutory validation.
+No real client receipt, vendor, person, GST, bank, or Tally data is authorized.
+No independent off-device backup is configured.
+AWS deployment remains frozen.
+EOF
+  printf 'Evidence pack created: %s\n' "$directory"
+}
+stop_stack() {
+  compose --profile remote stop
+  printf 'Local services stopped. Mobile queues and synthetic data were preserved.\n'
+}
+reset_stack() {
+  confirm_phrase "Delete and recreate all server-side synthetic records? " "RESET-SYNTHETIC-DATA"
+  compose exec -T api python -c 'from app.config import get_settings; from app.local_admin import reset_synthetic_data; reset_synthetic_data(get_settings(), "RESET SYNTHETIC DATA")'
+  seed
+}
+destroy_stack() {
+  confirm_phrase "Delete local containers, secrets, and all synthetic server data? " "DESTROY-LOCAL-PILOT"
+  if [[ -f "$ENV_FILE" ]]; then compose --profile remote down --remove-orphans; fi
+  sudo rm -rf "$DATA_ROOT/postgres" "$DATA_ROOT/images" "$DATA_ROOT/exports" "$DATA_ROOT/backups" "$DATA_ROOT/fixtures"
+  rm -rf "$CONFIG_ROOT"
+  rm -rf "$RUNTIME_ROOT"
+  printf 'Local synthetic pilot data and secrets were destroyed. The encrypted disk itself was preserved.\n'
+}
+usage() {
+  cat <<'EOF'
+Usage: ./scripts/local-pilot.sh COMMAND
+
+Commands:
+  preflight          Verify zero-budget local prerequisites
+  storage-audit      Inspect /dev/sda2 metadata read-only
+  storage-prepare    Destructively encrypt /dev/sda2 after typed confirmation
+  firewall-prepare   Restrict pilot ports to the detected local subnet
+  provision          Create local secrets, CA, fixtures, and containers
+  start --lan        Start LAN-only supervised pilot
+  start --both       Start LAN and preconfigured Cloudflare Tunnel
+  seed               Seed synthetic site, vendors, reviewers, and Tally data
+  enroll             Create a ten-minute device enrollment link
+  status             Show one local readiness summary
+  download-apk       Copy the local pilot APK and print SHA-256
+  acceptance         Upload and process 50 synthetic receipts
+  evidence           Export commit, image, model, OCR, APK, and limits evidence
+  stop               Stop services without deleting data
+  reset              Reset server-side synthetic data
+  destroy            Delete local synthetic data and secrets
+EOF
+}
+
+cd "$ROOT"
+case "${1:-}" in
+  preflight) preflight ;;
+  storage-audit) storage_audit ;;
+  storage-prepare) storage_prepare ;;
+  firewall-prepare) firewall_prepare ;;
+  provision) provision ;;
+  start) start_stack "${2:---lan}" ;;
+  seed) seed ;;
+  enroll) enroll ;;
+  status) status_cmd ;;
+  download-apk) download_apk ;;
+  acceptance) acceptance ;;
+  evidence) evidence ;;
+  stop) stop_stack ;;
+  reset) reset_stack ;;
+  destroy) destroy_stack ;;
+  *) usage; exit 2 ;;
+esac

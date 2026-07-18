@@ -7,6 +7,7 @@ import boto3
 import httpx
 
 from .config import Settings
+from .local_ocr import run_local_ocr
 
 
 logger = logging.getLogger("challanse.enrichment.providers")
@@ -87,6 +88,21 @@ def run_ocr(settings: Settings, png_bytes: bytes, client=None) -> OcrResult:
         if settings.environment == "production":
             raise RuntimeError("mock_ocr_forbidden_in_production")
         return OcrResult(raw_json={"provider": "mock", "blocks": []}, raw_text="Synthetic challan", confidence=95.0, provider_version="mock-v1")
+    if settings.ocr_provider == "local":
+        result = run_local_ocr(settings, png_bytes, client)
+        return OcrResult(
+            raw_json={
+                "provider": "tesseract-ollama-local",
+                "normalized": result.normalized,
+                "warnings": result.warnings,
+                "tesseract_version": result.tesseract_version,
+                "model": result.model_version,
+                "prompt_version": "challanse-local-normalizer-v1",
+            },
+            raw_text=result.raw_text,
+            confidence=result.confidence,
+            provider_version=f"{result.tesseract_version}+{result.model_version}",
+        )
     textract = client or boto3.client("textract", region_name=settings.aws_region)
     response = textract.detect_document_text(Document={"Bytes": png_bytes})
     blocks = list(response.get("Blocks", []))

@@ -1,5 +1,8 @@
 import logging
 import json as json_module
+import base64
+import hashlib
+import hmac
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
@@ -64,6 +67,7 @@ from .schemas import (
 )
 from .tenancy import system_connection
 from .integrity import assess_play_integrity
+from .local_admin import local_status, prewarm_local_model, reset_synthetic_data
 
 
 logger = logging.getLogger("challanse.enrichment")
@@ -161,6 +165,52 @@ def ready(settings=Depends(get_settings)) -> dict[str, object]:
         "credit": settings.credit_provider,
         "slack": settings.slack_provider,
     }}
+
+
+@app.get("/v1/local/status")
+async def authoritative_local_status(request: Request, settings=Depends(get_settings)) -> dict[str, object]:
+    await _verify_internal_request(request, settings)
+    try:
+        return local_status(settings)
+    except RuntimeError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+
+
+@app.get("/v1/local/auth", status_code=status.HTTP_204_NO_CONTENT)
+def authoritative_local_auth(request: Request, settings=Depends(get_settings)) -> Response:
+    if not settings.synthetic_mode or settings.environment != "local-pilot" or not settings.local_reviewer_password_sha256:
+        raise HTTPException(status_code=404, detail="NOT_FOUND")
+    authorization = request.headers.get("Authorization", "")
+    try:
+        username, password = base64.b64decode(authorization.removeprefix("Basic "), validate=True).decode().split(":", 1)
+    except (ValueError, UnicodeDecodeError):
+        username, password = "", ""
+    digest = hashlib.sha256(password.encode()).hexdigest()
+    if username != "reviewer" or not hmac.compare_digest(digest, settings.local_reviewer_password_sha256):
+        return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="ChallanSe Synthetic Pilot"'})
+    return Response(status_code=204)
+
+
+@app.post("/v1/admin/local/prewarm")
+async def authoritative_local_prewarm(request: Request, settings=Depends(get_settings)) -> dict[str, str]:
+    await _verify_internal_request(request, settings)
+    _reviewer_from_headers(request, settings)
+    try:
+        return {"status": "ready", "model": prewarm_local_model(settings)}
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.post("/v1/admin/local/reset")
+async def authoritative_local_reset(request: Request, settings=Depends(get_settings)) -> dict[str, str]:
+    raw = await _verify_internal_request(request, settings)
+    _reviewer_from_headers(request, settings)
+    try:
+        confirmation = str(json_module.loads(raw).get("confirmation", ""))
+        reset_synthetic_data(settings, confirmation)
+        return {"status": "reset"}
+    except (ValueError, TypeError, AttributeError, RuntimeError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 @app.post("/v1/pilot-requests", status_code=status.HTTP_201_CREATED)

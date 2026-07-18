@@ -1,0 +1,184 @@
+name: challanse-local-pilot
+
+x-backend: &backend
+  build:
+    context: ../../services/enrichment
+    dockerfile: Dockerfile.local
+  environment:
+    ENVIRONMENT: ${ENVIRONMENT}
+    SYNTHETIC_MODE: ${SYNTHETIC_MODE}
+    DATABASE_ADMIN_URL: ${DATABASE_ADMIN_URL}
+    DATABASE_URL: ${DATABASE_URL}
+    SYSTEM_DATABASE_URL: ${SYSTEM_DATABASE_URL}
+    DATABASE_APP_PASSWORD: ${DATABASE_APP_PASSWORD}
+    DATABASE_SYSTEM_PASSWORD: ${DATABASE_SYSTEM_PASSWORD}
+    TENANT_CONTEXT_HMAC_KEY: ${TENANT_CONTEXT_HMAC_KEY}
+    DEVICE_TOKEN_PEPPER: ${DEVICE_TOKEN_PEPPER}
+    EDGE_TO_ENRICHMENT_HMAC_KEY_ID: ${EDGE_TO_ENRICHMENT_HMAC_KEY_ID}
+    EDGE_TO_ENRICHMENT_HMAC_KEY: ${EDGE_TO_ENRICHMENT_HMAC_KEY}
+    RECEIPT_BUCKET: ${RECEIPT_BUCKET}
+    OBJECT_STORE_ENDPOINT: ${OBJECT_STORE_ENDPOINT}
+    OBJECT_STORE_ACCESS_KEY: ${OBJECT_STORE_ACCESS_KEY}
+    OBJECT_STORE_SECRET_KEY: ${OBJECT_STORE_SECRET_KEY}
+    OBJECT_STORE_SSE_MODE: ${OBJECT_STORE_SSE_MODE}
+    EVENT_QUEUE_PROVIDER: ${EVENT_QUEUE_PROVIDER}
+    OCR_PROVIDER: ${OCR_PROVIDER}
+    GST_PROVIDER: disabled
+    NOTIFICATION_PROVIDER: disabled
+    CREDIT_PROVIDER: disabled
+    SLACK_PROVIDER: disabled
+    OLLAMA_URL: ${OLLAMA_URL}
+    OLLAMA_MODEL: ${OLLAMA_MODEL}
+    OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS}
+    TESSERACT_LANGUAGES: ${TESSERACT_LANGUAGES}
+    LOCAL_DATA_ROOT: ${LOCAL_DATA_ROOT}
+    LOCAL_STORAGE_LIMIT_BYTES: ${LOCAL_STORAGE_LIMIT_BYTES}
+    LOCAL_REVIEWER_PASSWORD_SHA256: ${LOCAL_REVIEWER_PASSWORD_SHA256}
+    PUBLIC_API_URL: ${PUBLIC_API_URL}
+    REVIEW_DASHBOARD_URL: ${REVIEW_DASHBOARD_URL}
+    PLAY_INTEGRITY_PROVIDER: disabled
+  extra_hosts:
+    - host.docker.internal:host-gateway
+  networks: [pilot]
+  restart: "no"
+
+services:
+  postgres:
+    image: postgres:17.5
+    environment:
+      POSTGRES_DB: challanse_local
+      POSTGRES_USER: challanse_admin
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Set POSTGRES_ADMIN_PASSWORD}
+    volumes:
+      - ${CHALLANSE_DATA_ROOT:?Set CHALLANSE_DATA_ROOT}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U challanse_admin -d challanse_local"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    networks: [pilot]
+    restart: "no"
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - ${CHALLANSE_DATA_ROOT}/images:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    networks: [pilot]
+    restart: "no"
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" >/dev/null;
+        mc mb --ignore-existing local/challanse-receipts >/dev/null;
+        mc anonymous set none local/challanse-receipts >/dev/null
+    networks: [pilot]
+    restart: "no"
+
+  migrate:
+    <<: *backend
+    command: ["python", "-m", "app.migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *backend
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - ${CHALLANSE_DATA_ROOT}:/srv/challanse:ro
+    restart: "no"
+
+  worker:
+    <<: *backend
+    command: ["python", "-m", "app.local_worker"]
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - ${CHALLANSE_DATA_ROOT}:/srv/challanse:ro
+    restart: "no"
+
+  edge:
+    build:
+      context: ../..
+      dockerfile: deploy/local/Dockerfile.web
+    working_dir: /app/apps/edge
+    command: ["npx", "wrangler", "dev", "--local", "--ip", "0.0.0.0", "--port", "8787"]
+    volumes:
+      - ${CHALLANSE_RUNTIME_ROOT:?Set CHALLANSE_RUNTIME_ROOT}/edge.dev.vars:/app/apps/edge/.dev.vars:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [pilot]
+    restart: "no"
+
+  reviewer-worker:
+    build:
+      context: ../..
+      dockerfile: deploy/local/Dockerfile.web
+    working_dir: /app/apps/reviewer
+    command: ["npx", "wrangler", "dev", "--local", "--ip", "0.0.0.0", "--port", "8788"]
+    volumes:
+      - ${CHALLANSE_RUNTIME_ROOT}/reviewer.dev.vars:/app/apps/reviewer/.dev.vars:ro
+    depends_on: [edge]
+    networks: [pilot]
+    restart: "no"
+
+  gateway:
+    image: caddy:2.10.2-alpine
+    environment:
+      CHALLANSE_LAN_IP: ${CHALLANSE_LAN_IP:?Set CHALLANSE_LAN_IP}
+      LOCAL_REVIEWER_GATEWAY_SECRET: ${LOCAL_REVIEWER_GATEWAY_SECRET}
+    ports:
+      - ${CHALLANSE_LAN_IP}:8443:8443
+      - ${CHALLANSE_LAN_IP}:8444:8444
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${CHALLANSE_RUNTIME_ROOT}/tls:/etc/challanse-tls:ro
+      - ../../apps/reviewer/dist:/srv/reviewer:ro
+    depends_on: [edge]
+    networks: [pilot]
+    restart: "no"
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.7.0
+    profiles: [remote]
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+    command: ["tunnel", "--no-autoupdate", "run"]
+    depends_on: [edge, reviewer-worker]
+    networks: [pilot]
+    restart: "no"
+
+networks:
+  pilot:
+    internal: false

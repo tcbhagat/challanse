@@ -9,6 +9,7 @@ import {
   getEnrollmentCredential,
   parseEnrollmentLink,
   type PilotConfiguration,
+  IS_LOCAL_PILOT,
 } from './config/deviceEnrollment';
 
 function EnrollmentScreen({ onConfigured }: { onConfigured: (configuration: PilotConfiguration) => void }) {
@@ -37,6 +38,7 @@ function EnrollmentScreen({ onConfigured }: { onConfigured: (configuration: Pilo
   }, [consumeLink]);
 
   return <View style={styles.enrollmentScreen}>
+    {IS_LOCAL_PILOT ? <Text accessibilityRole="header" style={styles.syntheticBanner}>SYNTHETIC TEST</Text> : null}
     <StatusBar backgroundColor="#000" barStyle="light-content" />
     <View style={styles.scanMark}><View /><View /><View /><View /></View>
     <Text style={styles.title}>Scan setup QR</Text>
@@ -63,7 +65,12 @@ export default function PilotApp() {
   }, []);
 
   if (!ready) return <View style={styles.loading}><ActivityIndicator size="large" color="#f59e0b" /></View>;
-  return <SafeAreaProvider>{configuration ? <ReceiveMaterialApp configuration={configuration} /> : <EnrollmentScreen onConfigured={setConfiguration} />}</SafeAreaProvider>;
+  return <SafeAreaProvider>
+    {configuration ? <View style={styles.configured}>
+      {IS_LOCAL_PILOT ? <Text accessibilityRole="header" style={styles.syntheticBanner}>SYNTHETIC TEST</Text> : null}
+      <ReceiveMaterialApp configuration={configuration} />
+    </View> : <EnrollmentScreen onConfigured={setConfiguration} />}
+  </SafeAreaProvider>;
 }
 
 const styles = StyleSheet.create({
@@ -74,4 +81,6 @@ const styles = StyleSheet.create({
   hindi: { color: '#f59e0b', fontSize: 22, fontWeight: '800', marginTop: 4 },
   message: { color: '#aeb9c8', fontSize: 16, lineHeight: 24, marginVertical: 24, maxWidth: 310, textAlign: 'center' },
   instruction: { color: '#fff', fontSize: 17, fontWeight: '800', textAlign: 'center' },
+  configured: { backgroundColor: '#000', flex: 1 },
+  syntheticBanner: { backgroundColor: '#f59e0b', color: '#000', fontSize: 16, fontWeight: '900', paddingVertical: 8, textAlign: 'center', width: '100%' },
 });
