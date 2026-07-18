@@ -1,12 +1,12 @@
 # ChallanSe Local Synthetic Pilot
 
-This environment is for supervised client demonstrations with synthetic data only. AWS deployment remains frozen. Images, OCR text, PostgreSQL data, and exports stay on the encrypted pilot disk. Cloudflare Tunnel, when explicitly started, transports encrypted traffic but does not store receipt payloads.
+This environment is for supervised client demonstrations with synthetic data only. AWS deployment remains frozen. Images, OCR text, PostgreSQL data, and exports stay in the encrypted pilot container. Cloudflare Tunnel, when explicitly started, transports encrypted traffic but does not store receipt payloads.
 
 ## Safety Boundary
 
 - Never use real challans, vendors, people, GST numbers, bank details, or Tally exports.
-- Do not run `storage-prepare` until `/dev/sda2` is backed up and explicitly disposable.
-- `storage-prepare` permanently erases `/dev/sda2` and does not configure automatic startup.
+- `/dev/sda2` contains existing personal and local-LLM files and must never be formatted by ChallanSe.
+- `storage-prepare` creates a separate 20 GB LUKS2 container file and preserves every existing host-partition file.
 - LAN startup requires UFW rules restricted to the detected local subnet.
 - Remote startup is optional and requires a dedicated Cloudflare Tunnel plus Access application allowing only `admin@constrovet.com` and `bhagat.taran@gmail.com`.
 - The PC must remain on during a demonstration. Mobile receipts remain queued when it is off.
@@ -23,13 +23,23 @@ cd /home/taran/challanse-website
 
 Preflight requires Android SDK 36, Build Tools `36.0.0`, and NDK `27.1.12297006` so the sideloadable synthetic APK can be built locally. It stops with a clear error and creates nothing when these components are absent.
 
-Stop and inspect the storage audit. Only after confirming backups and disposability:
+Stop and inspect the storage audit. Install `cryptsetup` once, then create the separate encrypted container:
 
 ```bash
+sudo apt update
+sudo apt install -y cryptsetup
 ./scripts/local-pilot.sh storage-prepare
 ./scripts/local-pilot.sh firewall-prepare
 ./scripts/local-pilot.sh provision
 ```
+
+For `storage-prepare`, type `CREATE-20GB-ENCRYPTED-CHALLANSE-CONTAINER` and create a strong LUKS passphrase. The command safely reuses the desktop's existing `/dev/sda2` mount when present, exposes it through `/mnt/challanse-host`, and allocates `/mnt/challanse-host/challanse-local.luks`. It does not format `/dev/sda2`. After a reboot, reopen it before starting the pilot:
+
+```bash
+./scripts/local-pilot.sh storage-open
+```
+
+If passphrase confirmation fails during the first format, rerun `storage-prepare`. The CLI validates the exact file, confirms it is not LUKS, checks its size, owner, mode, and link count, then requests `RECOVER-INCOMPLETE-CHALLANSE-CONTAINER` before removing only that incomplete file.
 
 The local reviewer password is entered during provisioning and is not printed or stored in plaintext. Install `~/.config/challanse-local/tls/pilot-ca.crt` as a trusted certificate only on supervised reviewer devices. The Android local-pilot APK contains only that public pilot CA certificate.
 
@@ -80,9 +90,10 @@ Evidence is written under `/srv/challanse/exports`. It includes the commit, cont
 
 ```bash
 ./scripts/local-pilot.sh stop
+./scripts/local-pilot.sh storage-close
 ```
 
-Stopping preserves PostgreSQL, images, fixtures, and mobile queues. To recreate only server-side synthetic records:
+Stopping and closing preserve PostgreSQL, images, fixtures, mobile queues, and all pre-existing `/dev/sda2` files. To recreate only server-side synthetic records:
 
 ```bash
 ./scripts/local-pilot.sh reset

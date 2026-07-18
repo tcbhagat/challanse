@@ -28,8 +28,11 @@ bash -n scripts/test-production-hardening.sh
 bash -n scripts/test-budget-controls.sh
 bash -n scripts/zero-cost-readiness.sh
 bash -n scripts/test-zero-cost-readiness.sh
+bash -n scripts/local-pilot.sh
+bash -n scripts/test-local-pilot-storage.sh
 shellcheck -e SC1090 scripts/test-waf-provisioning.sh
-shellcheck -e SC1090 scripts/go-live.sh scripts/rollback-production.sh scripts/test-production-config.sh scripts/test-turnstile-recovery.sh scripts/test-production-hardening.sh scripts/test-budget-controls.sh scripts/zero-cost-readiness.sh scripts/test-zero-cost-readiness.sh
+shellcheck -e SC1090 scripts/go-live.sh scripts/rollback-production.sh scripts/local-pilot.sh scripts/test-local-pilot-storage.sh scripts/test-production-config.sh scripts/test-turnstile-recovery.sh scripts/test-production-hardening.sh scripts/test-budget-controls.sh scripts/zero-cost-readiness.sh scripts/test-zero-cost-readiness.sh
+bash scripts/test-local-pilot-storage.sh
 test -x scripts/go-live.sh
 test -x scripts/rollback-production.sh
 grep -Fq "VITE_API_BASE_URL: /api" .github/workflows/ci-pages.yml

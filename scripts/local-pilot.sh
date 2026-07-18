@@ -11,7 +11,11 @@ TLS_DIR="$CONFIG_ROOT/tls"
 DATA_ROOT="/srv/challanse"
 COMPOSE_FILE="$ROOT/deploy/local/docker-compose.yml"
 RUNTIME_ROOT="$ROOT/.local-runtime"
-DEVICE="/dev/sda2"
+HOST_DEVICE="/dev/sda2"
+HOST_MOUNT="/mnt/challanse-host"
+CONTAINER_FILE="$HOST_MOUNT/challanse-local.luks"
+CONTAINER_SIZE="20G"
+CONTAINER_SIZE_BYTES="21474836480"
 MAPPER_NAME="challanse-local"
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -56,6 +60,43 @@ require_encrypted_storage() {
   type="$(lsblk -dn -o TYPE "$source" 2>/dev/null || true)"
   [[ "$type" == "crypt" ]] || die "$DATA_ROOT is not backed by an active LUKS mapping."
 }
+mount_host_storage() {
+  local current_mount expected_uuid mounted_uuid
+  expected_uuid="$(lsblk -dn -o UUID "$HOST_DEVICE" | tr -d ' ')"
+  [[ -n "$expected_uuid" ]] || die "The UUID for $HOST_DEVICE could not be read safely."
+  if mountpoint -q "$HOST_MOUNT"; then
+    mounted_uuid="$(findmnt -rn -o UUID --target "$HOST_MOUNT" 2>/dev/null || true)"
+    [[ "$mounted_uuid" == "$expected_uuid" ]] || die "$HOST_MOUNT is already used by a different filesystem."
+    return
+  fi
+  current_mount="$(findmnt -rn -S "$HOST_DEVICE" -o TARGET 2>/dev/null | head -n 1 || true)"
+  sudo mkdir -p "$HOST_MOUNT"
+  if [[ -z "$current_mount" ]]; then
+    sudo mount "$HOST_DEVICE" "$HOST_MOUNT"
+  elif [[ "$current_mount" != "$HOST_MOUNT" ]]; then
+    sudo mount --bind "$current_mount" "$HOST_MOUNT"
+  fi
+  mounted_uuid="$(findmnt -rn -o UUID --target "$HOST_MOUNT" 2>/dev/null || true)"
+  [[ "$mounted_uuid" == "$expected_uuid" ]] || die "$HOST_MOUNT is not backed by $HOST_DEVICE."
+}
+recover_incomplete_container() {
+  local luks_status metadata
+  [[ -e "$CONTAINER_FILE" ]] || return
+  if sudo cryptsetup isLuks "$CONTAINER_FILE"; then
+    die "$CONTAINER_FILE is a valid encrypted container. Run storage-open instead."
+  else
+    luks_status=$?
+    [[ "$luks_status" -eq 1 ]] || die "The existing container could not be validated safely; it was not changed."
+  fi
+  sudo test -f "$CONTAINER_FILE" || die "The incomplete container path is not a regular file; it was not changed."
+  sudo test ! -L "$CONTAINER_FILE" || die "The incomplete container path is a symbolic link; it was not changed."
+  metadata="$(sudo stat -c '%s:%U:%G:%a:%h' "$CONTAINER_FILE")"
+  [[ "$metadata" == "$CONTAINER_SIZE_BYTES:root:root:600:1" ]] \
+    || die "The incomplete container metadata is unexpected; it was not changed."
+  confirm_phrase "Remove only the invalid container left by the failed passphrase attempt. " "RECOVER-INCOMPLETE-CHALLANSE-CONTAINER"
+  sudo rm -- "$CONTAINER_FILE"
+  printf 'Incomplete container removed. Existing files elsewhere on %s were unchanged.\n' "$HOST_DEVICE"
+}
 require_firewall() {
   grep -q '^ENABLED=yes' /etc/ufw/ufw.conf 2>/dev/null || die "UFW is not active. Run firewall-prepare after reviewing its rules."
   local subnet
@@ -75,7 +116,7 @@ check_port_free() {
 preflight() {
   require_aws_freeze
   local command
-  for command in docker curl jq openssl python3 npm ip ss lsblk findmnt sha256sum keytool ufw; do need "$command"; done
+  for command in docker curl jq openssl python3 npm ip ss lsblk findmnt mountpoint sha256sum keytool ufw cryptsetup mkfs.ext4 fallocate; do need "$command"; done
   docker info >/dev/null 2>&1 || die "Docker is not running or your user cannot access it."
   curl -fsS http://127.0.0.1:11434/api/tags | jq -e '.models[] | select(.name == "qwen2.5:7b")' >/dev/null \
     || die "Ollama model qwen2.5:7b is not available. Run: ollama pull qwen2.5:7b"
@@ -114,35 +155,70 @@ firewall_prepare() {
 }
 storage_audit() {
   need lsblk; need findmnt; need blkid
-  [[ -b "$DEVICE" ]] || die "$DEVICE was not found. No storage action was taken."
-  printf 'Read-only storage inventory for %s:\n' "$DEVICE"
-  lsblk -o NAME,PATH,SIZE,TYPE,FSTYPE,FSVER,LABEL,UUID,MOUNTPOINTS "$DEVICE"
-  blkid "$DEVICE" || true
-  if findmnt -rn -S "$DEVICE" >/dev/null 2>&1; then
-    printf 'WARNING: %s is mounted. It will not be modified.\n' "$DEVICE"
+  [[ -b "$HOST_DEVICE" ]] || die "$HOST_DEVICE was not found. No storage action was taken."
+  printf 'Read-only storage inventory for %s:\n' "$HOST_DEVICE"
+  lsblk -o NAME,PATH,SIZE,TYPE,FSTYPE,FSVER,LABEL,UUID,MOUNTPOINTS "$HOST_DEVICE"
+  blkid "$HOST_DEVICE" || true
+  if findmnt -rn -S "$HOST_DEVICE" >/dev/null 2>&1; then
+    printf '%s is mounted. Existing files will be preserved.\n' "$HOST_DEVICE"
   else
-    printf '%s is not mounted. No filesystem content was opened or changed.\n' "$DEVICE"
+    printf '%s is not mounted. No filesystem content was opened or changed.\n' "$HOST_DEVICE"
   fi
+  printf 'ChallanSe uses a separate %s LUKS2 container file; it never formats %s.\n' "$CONTAINER_SIZE" "$HOST_DEVICE"
   if findmnt -rn -T "$DATA_ROOT" >/dev/null 2>&1; then
     findmnt -o SOURCE,TARGET,FSTYPE,OPTIONS --target "$DATA_ROOT"
   fi
 }
 storage_prepare() {
   require_aws_freeze
-  need cryptsetup; need mkfs.ext4; need lsblk; need findmnt
-  [[ -b "$DEVICE" ]] || die "$DEVICE was not found."
-  [[ "$(findmnt -rn -o SOURCE / 2>/dev/null)" != "$DEVICE" ]] || die "Refusing to modify the root filesystem."
-  ! findmnt -rn -S "$DEVICE" >/dev/null 2>&1 || die "$DEVICE is mounted. Unmount it and audit it first."
+  need cryptsetup; need mkfs.ext4; need lsblk; need findmnt; need mount; need mountpoint; need blkid; need fallocate; need df
+  [[ -b "$HOST_DEVICE" ]] || die "$HOST_DEVICE was not found."
+  [[ "$(findmnt -rn -o SOURCE / 2>/dev/null)" != "$HOST_DEVICE" ]] || die "Refusing to use the root filesystem device."
+  [[ "$(lsblk -dn -o FSTYPE "$HOST_DEVICE")" == "ext4" ]] || die "$HOST_DEVICE must remain an existing ext4 data partition."
   storage_audit
-  printf '%s\n' 'DANGER: the next confirmed operation permanently erases every file on /dev/sda2.'
-  confirm_phrase "Confirm that its contents are backed up and disposable. " "ERASE-/dev/sda2-FOR-SYNTHETIC-CHALLANSE"
-  sudo cryptsetup luksFormat --type luks2 "$DEVICE"
-  sudo cryptsetup open "$DEVICE" "$MAPPER_NAME"
+  printf '%s\n' "Existing files on $HOST_DEVICE will not be erased or reformatted."
+  confirm_phrase "Create a new $CONTAINER_SIZE encrypted container file for synthetic ChallanSe data. " "CREATE-20GB-ENCRYPTED-CHALLANSE-CONTAINER"
+  mount_host_storage
+  recover_incomplete_container
+  local available_bytes
+  available_bytes="$(df -B1 --output=avail "$HOST_MOUNT" | tail -n 1 | tr -d ' ')"
+  [[ "$available_bytes" -ge 25000000000 ]] || die "At least 25 GB free space is required before creating the encrypted container."
+  sudo fallocate -l "$CONTAINER_SIZE_BYTES" "$CONTAINER_FILE"
+  sudo chmod 600 "$CONTAINER_FILE"
+  sudo cryptsetup luksFormat --type luks2 "$CONTAINER_FILE"
+  sudo cryptsetup open "$CONTAINER_FILE" "$MAPPER_NAME"
   sudo mkfs.ext4 -L challanse-local "/dev/mapper/$MAPPER_NAME"
   sudo mkdir -p "$DATA_ROOT"
   sudo mount "/dev/mapper/$MAPPER_NAME" "$DATA_ROOT"
   sudo chown "$USER":"$(id -gn)" "$DATA_ROOT"
-  printf 'Encrypted storage is mounted for this supervised session. It was not added to automatic startup.\n'
+  printf 'Encrypted container storage is mounted at %s. Existing files on %s were preserved.\n' "$DATA_ROOT" "$HOST_DEVICE"
+}
+storage_open() {
+  require_aws_freeze
+  need cryptsetup; need findmnt; need mount; need mountpoint; need blkid; need lsblk
+  mount_host_storage
+  [[ -f "$CONTAINER_FILE" ]] || die "$CONTAINER_FILE does not exist. Run storage-prepare once."
+  if [[ ! -e "/dev/mapper/$MAPPER_NAME" ]]; then
+    sudo cryptsetup open "$CONTAINER_FILE" "$MAPPER_NAME"
+  fi
+  sudo mkdir -p "$DATA_ROOT"
+  if ! findmnt -rn --target "$DATA_ROOT" >/dev/null 2>&1; then
+    sudo mount "/dev/mapper/$MAPPER_NAME" "$DATA_ROOT"
+  fi
+  sudo chown "$USER":"$(id -gn)" "$DATA_ROOT"
+  require_encrypted_storage
+  printf 'Encrypted ChallanSe container is open at %s.\n' "$DATA_ROOT"
+}
+storage_close() {
+  require_aws_freeze
+  need cryptsetup; need findmnt
+  if findmnt -rn --target "$DATA_ROOT" >/dev/null 2>&1; then
+    sudo umount "$DATA_ROOT"
+  fi
+  if [[ -e "/dev/mapper/$MAPPER_NAME" ]]; then
+    sudo cryptsetup close "$MAPPER_NAME"
+  fi
+  printf 'Encrypted ChallanSe container is closed. Existing host files remain mounted and unchanged.\n'
 }
 write_secret_files() {
   local lan_ip="$1" reviewer_password reviewer_password_confirm
@@ -239,23 +315,62 @@ EOF
   chmod 600 "$TLS_DIR"/*.key
   chmod 644 "$TLS_DIR"/*.crt
 }
+validate_existing_provision_state() {
+  local lan_ip="$1" required_file private_file
+  for required_file in \
+    "$ENV_FILE" \
+    "$EDGE_VARS" \
+    "$REVIEWER_VARS" \
+    "$TLS_DIR/pilot-ca.crt" \
+    "$TLS_DIR/pilot-ca.key" \
+    "$TLS_DIR/pilot.crt" \
+    "$TLS_DIR/pilot.key"; do
+    [[ -f "$required_file" ]] || die "Provisioning is incomplete: missing $required_file. Existing secrets were not changed."
+  done
+  for private_file in "$ENV_FILE" "$EDGE_VARS" "$REVIEWER_VARS" "$TLS_DIR/pilot-ca.key" "$TLS_DIR/pilot.key"; do
+    [[ "$(stat -c '%a' "$private_file")" == "600" ]] || die "Unsafe permissions on $private_file; expected mode 600."
+  done
+  (
+    set -a
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+    set +a
+    [[ "${AWS_DEPLOYMENT_FROZEN:-}" == "true" ]]
+    [[ "${SYNTHETIC_MODE:-}" == "true" ]]
+    [[ "${CHALLANSE_LAN_IP:-}" == "$lan_ip" ]]
+  ) || die "Existing local pilot configuration does not match the frozen synthetic environment or current LAN IP."
+  openssl verify -CAfile "$TLS_DIR/pilot-ca.crt" "$TLS_DIR/pilot.crt" >/dev/null \
+    || die "Existing pilot TLS certificate does not validate against its local CA."
+  cmp -s \
+    <(openssl x509 -in "$TLS_DIR/pilot.crt" -pubkey -noout) \
+    <(openssl pkey -in "$TLS_DIR/pilot.key" -pubout) \
+    || die "Existing pilot TLS certificate and private key do not match."
+}
 provision() {
   preflight
   require_encrypted_storage
   local lan_ip
   lan_ip="$(local_ip)"
   [[ -n "$lan_ip" ]] || die "A fixed LAN IPv4 address could not be detected."
-  [[ ! -e "$ENV_FILE" ]] || die "Local pilot secrets already exist. Run destroy only if you intend to recreate them."
   mkdir -p "$DATA_ROOT"/{postgres,images,exports,backups,fixtures}
-  sudo chown -R 999:999 "$DATA_ROOT/postgres"
-  sudo chown -R 1000:1000 "$DATA_ROOT/images"
+  if [[ "$(stat -c '%u:%g' "$DATA_ROOT/postgres")" != "999:999" ]]; then
+    sudo chown -R 999:999 "$DATA_ROOT/postgres"
+  fi
+  if [[ "$(stat -c '%u:%g' "$DATA_ROOT/images")" != "$(id -u):$(id -g)" ]]; then
+    sudo chown -R "$(id -u):$(id -g)" "$DATA_ROOT/images"
+  fi
   chown -R "$USER":"$(id -gn)" "$DATA_ROOT"/{exports,backups,fixtures}
-  write_secret_files "$lan_ip"
-  generate_ca "$lan_ip"
+  if [[ -e "$ENV_FILE" ]]; then
+    validate_existing_provision_state "$lan_ip"
+    printf 'Validated existing local secrets and pilot CA; resuming provisioning without rotation.\n'
+  else
+    write_secret_files "$lan_ip"
+    generate_ca "$lan_ip"
+  fi
   cp "$TLS_DIR/pilot-ca.crt" "$ROOT/apps/mobile/android/app/src/localPilot/res/raw/challanse_pilot_ca.crt"
   python3 "$ROOT/scripts/generate-local-fixtures.py" "$DATA_ROOT/fixtures"
-  (cd "$ROOT" && npm run build --workspace @challanse/reviewer)
-  (cd "$ROOT" && npm run build:local-pilot --workspace @challanse/mobile)
+  (cd "$ROOT" && CI=true npm run build --workspace @challanse/reviewer)
+  (cd "$ROOT" && CI=true npm run build:local-pilot --workspace @challanse/mobile)
   compose build
   printf 'Provisioning complete. Secrets are stored with mode 600 under %s.\n' "$CONFIG_ROOT"
 }
@@ -410,7 +525,9 @@ Usage: ./scripts/local-pilot.sh COMMAND
 Commands:
   preflight          Verify zero-budget local prerequisites
   storage-audit      Inspect /dev/sda2 metadata read-only
-  storage-prepare    Destructively encrypt /dev/sda2 after typed confirmation
+  storage-prepare    Create a separate 20 GB encrypted container without erasing files
+  storage-open       Open the encrypted container after reboot
+  storage-close      Close the encrypted container after stopping services
   firewall-prepare   Restrict pilot ports to the detected local subnet
   provision          Create local secrets, CA, fixtures, and containers
   start --lan        Start LAN-only supervised pilot
@@ -432,6 +549,8 @@ case "${1:-}" in
   preflight) preflight ;;
   storage-audit) storage_audit ;;
   storage-prepare) storage_prepare ;;
+  storage-open) storage_open ;;
+  storage-close) storage_close ;;
   firewall-prepare) firewall_prepare ;;
   provision) provision ;;
   start) start_stack "${2:---lan}" ;;

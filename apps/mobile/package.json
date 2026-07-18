@@ -19,6 +19,7 @@
     "build:local-pilot": "cd android && ./gradlew assembleLocalPilot"
   },
   "dependencies": {
+    "@babel/runtime": "7.29.7",
     "@noble/hashes": "2.2.0",
     "@opentelemetry/api": "1.9.0",
     "@op-engineering/op-sqlite": "^17.1.2",
@@ -39,7 +40,6 @@
   "devDependencies": {
     "@babel/core": "^7.25.2",
     "@babel/preset-env": "^7.25.3",
-    "@babel/runtime": "^7.25.0",
     "@react-native-community/cli": "20.2.0",
     "@react-native-community/cli-platform-android": "20.2.0",
     "@react-native-community/cli-platform-ios": "20.1.0",
