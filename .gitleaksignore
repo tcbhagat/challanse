@@ -1,0 +1,7 @@
+# Reviewed historical false positives: public debug fingerprints, synthetic test keys, and policy prose.
+500ef55f20d30669d9533d5a3bf48662ea89c759:scripts/go-live.sh:generic-api-key:13
+3025a30184eda73a0abde18087ec4d827eb785e7:scripts/go-live.sh:generic-api-key:13
+98ce5f9713f5a8e79c037c797f9aa89e7bbb2cd0:scripts/zero-cost-readiness.sh:generic-api-key:166
+95cbe366915ba1ae813354661784e0871bbcafaf:.github/workflows/ci-pages.yml:generic-api-key:138
+95cbe366915ba1ae813354661784e0871bbcafaf:services/enrichment/tests/test_workflows.py:generic-api-key:81
+ef9cb92c409ebe4d76a550e338d7f19d1e3d9134:docs/pilot-runbook.md:generic-api-key:40

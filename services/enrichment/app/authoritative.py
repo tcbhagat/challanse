@@ -15,6 +15,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from .config import Settings
+from .audit_chain import audit_event_hash
 from .image_store import delete_all_object_versions
 from .object_store import object_encryption_headers, object_store_client
 from .local_storage import local_uploads_paused
@@ -188,6 +189,8 @@ def enroll_device(settings: Settings, request: EnrollmentRequest) -> dict[str, s
 
 
 def mobile_bootstrap(settings: Settings, device: DeviceContext) -> dict[str, Any]:
+    from .pilot_control import current_pilot_mode
+
     with tenant_connection(settings.database_url, str(device.organization_id), row_factory=dict_row) as connection:
         site = connection.execute(
             """
@@ -203,6 +206,7 @@ def mobile_bootstrap(settings: Settings, device: DeviceContext) -> dict[str, Any
     if not site:
         raise AuthoritativeError("SITE_INACTIVE", 403)
     return {
+        "pilotMode": current_pilot_mode(settings),
         "site": {"id": str(site["id"]), "name": site["name"]},
         "device": {"id": str(device.id), "name": device.name},
         "vendors": [dict(vendor) for vendor in vendors],
@@ -404,8 +408,7 @@ def _is_webp(body: bytes) -> bool:
 
 
 def _audit_hash(previous_hash: str, event: dict[str, Any]) -> str:
-    canonical = json.dumps(event, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(f"{previous_hash}:{canonical}".encode()).hexdigest()
+    return audit_event_hash(previous_hash, event)
 
 
 def _row_value(row: Any, key: str, index: int = 0) -> Any:

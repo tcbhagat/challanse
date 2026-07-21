@@ -9,6 +9,7 @@ export type PilotVendor = {
 };
 
 export type PilotConfiguration = {
+  pilotMode: 'synthetic-demo' | 'controlled-client-pilot';
   apiBaseUrl: string;
   deviceId: string;
   deviceToken: string;

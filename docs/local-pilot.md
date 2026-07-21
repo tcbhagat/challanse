@@ -1,10 +1,10 @@
-# ChallanSe Local Synthetic Pilot
+# ChallanSe Local Pilot
 
-This environment is for supervised client demonstrations with synthetic data only. AWS deployment remains frozen. Images, OCR text, PostgreSQL data, and exports stay in the encrypted pilot container. Cloudflare Tunnel, when explicitly started, transports encrypted traffic but does not store receipt payloads.
+This environment defaults to supervised demonstrations with synthetic data. A guarded `controlled-client-pilot` mode exists, but remains unavailable until individual reviewer MFA, a recent encrypted backup, a tested restore, an independent security report, and signed client approval are recorded. AWS deployment remains frozen. Images, OCR text, PostgreSQL data, and exports stay in the encrypted pilot container. Cloudflare Tunnel, when explicitly started, transports encrypted traffic but does not store receipt payloads.
 
 ## Safety Boundary
 
-- Never use real challans, vendors, people, GST numbers, bank details, or Tally exports.
+- Never use real challans, vendors, people, GST numbers, bank details, or Tally exports while the status reports `synthetic-demo`.
 - `/dev/sda2` contains existing personal and local-LLM files and must never be formatted by ChallanSe.
 - `storage-prepare` creates a separate 20 GB LUKS2 container file and preserves every existing host-partition file.
 - LAN startup requires UFW rules restricted to the detected local subnet.
@@ -41,13 +41,15 @@ For `storage-prepare`, type `CREATE-20GB-ENCRYPTED-CHALLANSE-CONTAINER` and crea
 
 If passphrase confirmation fails during the first format, rerun `storage-prepare`. The CLI validates the exact file, confirms it is not LUKS, checks its size, owner, mode, and link count, then requests `RECOVER-INCOMPLETE-CHALLANSE-CONTAINER` before removing only that incomplete file.
 
-The local reviewer password is entered during provisioning and is not printed or stored in plaintext. Install `~/.config/challanse-local/tls/pilot-ca.crt` as a trusted certificate only on supervised reviewer devices. The Android local-pilot APK contains only that public pilot CA certificate.
+Reviewer credentials are not created during provisioning. Each named reviewer receives an Argon2id password, TOTP MFA secret, and one-time recovery codes through the guarded enrollment command. Install `~/.config/challanse-local/tls/pilot-ca.crt` as a trusted certificate only on supervised reviewer devices. The Android local-pilot APK contains only that public pilot CA certificate.
 
 ## Start a LAN Demonstration
 
 ```bash
 ./scripts/local-pilot.sh start --lan
 ./scripts/local-pilot.sh seed
+./scripts/local-pilot.sh reviewer-enroll
+./scripts/local-pilot.sh reviewer-enroll
 ./scripts/local-pilot.sh status
 ./scripts/local-pilot.sh download-apk
 ```
@@ -59,6 +61,44 @@ Install `artifacts/local-pilot/ChallanSe-Local-Pilot.apk` on the test Android de
 ```
 
 Open the link on the Android device. The app name and persistent banner both identify the build as synthetic.
+
+Store each TOTP URI and recovery-code set separately and offline. They are shown once. Every login, correction, export, and administrative operation is then associated with an individual reviewer session; mutating browser requests also require a session-bound CSRF token.
+
+## Independent Backup
+
+Real-data activation requires a separately mounted encrypted USB drive. The CLI rejects internal disks. Connect the approved drive, then run:
+
+```bash
+./scripts/local-pilot.sh backup /media/USER/CLIENT-BACKUP
+./scripts/local-pilot.sh backup-verify /media/USER/CLIENT-BACKUP
+```
+
+The first command writes an encrypted Restic snapshot. The second verifies repository data, restores the latest snapshot into temporary encrypted storage, confirms that the database dump is present, writes evidence, and removes the temporary restored copy. Disconnect the USB drive afterward. Activation requires a successful backup from the previous 24 hours and a restore verification from the previous 30 days.
+
+## Controlled Client Activation
+
+Do not activate this mode without a qualified independent security review and signed client agreement. Prepare a private JSON file containing one organization, one site, exactly two named reviewers, approved Wi-Fi SSIDs, and approved vendors. Keep it outside Git.
+
+```bash
+./scripts/local-pilot.sh prepare-client /secure/client-pilot.json
+./scripts/local-pilot.sh reviewer-enroll
+./scripts/local-pilot.sh reviewer-enroll
+./scripts/local-pilot.sh backup /media/USER/CLIENT-BACKUP
+./scripts/local-pilot.sh backup-verify /media/USER/CLIENT-BACKUP
+./scripts/local-pilot.sh activate-client-pilot \
+  /secure/signed-client-approval.pdf \
+  /secure/independent-security-review.pdf \
+  /srv/challanse/exports/backup-restore-SNAPSHOT.json
+```
+
+The command hashes the three evidence files and activates the database-controlled mode only when all gates pass. Editing an environment file cannot activate real-data mode. To end capture and later remove client data after the agreed retention period:
+
+```bash
+./scripts/local-pilot.sh end-client-pilot
+./scripts/local-pilot.sh purge-ended-client-pilot
+```
+
+The purge command fails until the configured retention period has expired.
 
 ## Optional Remote Demonstration
 
@@ -80,11 +120,12 @@ The CLI requests the tunnel token, Access team domain, and Access audience witho
 ```bash
 ./scripts/local-pilot.sh acceptance
 ./scripts/local-pilot.sh evidence
+./scripts/quality-loop.sh observe
 ```
 
 The acceptance command uploads 50 generated WebP receipts through resumable upload contracts, verifies durable acknowledgements, and waits up to 30 minutes for the sequential OCR queue to drain. It does not replace the required Android 8 / 2 GB device write test.
 
-Evidence is written under `/srv/challanse/exports`. It includes the commit, container identities, model list, OCR versions, APK checksum, and explicit limitations. It does not contain passwords, device tokens, CA private keys, or tunnel credentials.
+Evidence is written under `/srv/challanse/exports`. It includes the commit, container identities, model list, OCR versions, APK checksum, standards mapping, test status, and explicit limitations. It does not contain passwords, device tokens, CA private keys, or tunnel credentials. `quality-loop.sh improve` may create an isolated branch and pull request, but it cannot merge, release, activate client mode, rotate credentials, delete data, or change network routes.
 
 ## Stop or Reset
 
@@ -110,5 +151,6 @@ To delete all local synthetic server data and secrets while preserving the encry
 - This validates workflow and usability, not production resilience or real OCR accuracy.
 - OCR normalization can be slow on CPU and runs one receipt at a time.
 - Low-confidence, unavailable, invalid, or untraceable model output requires human review.
-- There is no independent off-device backup.
+- Controlled client mode requires an encrypted off-device backup and successful restore evidence; without them the system remains synthetic-only.
+- Independent security review, real-device performance evidence, a two-device field trial, UPS readiness, and signed client acceptance are human gates and are not satisfied by source-code tests.
 - No statutory, GST, credit, notification, or financial-production integration is enabled.

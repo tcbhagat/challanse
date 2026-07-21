@@ -61,6 +61,7 @@ export const pilotRequestSchema = z.object({
 });
 
 export type BootstrapResponse = {
+  pilotMode: 'synthetic-demo' | 'controlled-client-pilot';
   site: { id: string; name: string };
   device: { id: string; name: string };
   vendors: Vendor[];

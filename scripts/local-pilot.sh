@@ -8,6 +8,7 @@ ENV_FILE="$CONFIG_ROOT/local.env"
 EDGE_VARS="$CONFIG_ROOT/edge.dev.vars"
 REVIEWER_VARS="$CONFIG_ROOT/reviewer.dev.vars"
 TLS_DIR="$CONFIG_ROOT/tls"
+RESTIC_PASSWORD_FILE="$CONFIG_ROOT/restic-password"
 DATA_ROOT="/srv/challanse"
 COMPOSE_FILE="$ROOT/deploy/local/docker-compose.yml"
 RUNTIME_ROOT="$ROOT/.local-runtime"
@@ -221,13 +222,10 @@ storage_close() {
   printf 'Encrypted ChallanSe container is closed. Existing host files remain mounted and unchanged.\n'
 }
 write_secret_files() {
-  local lan_ip="$1" reviewer_password reviewer_password_confirm
+  local lan_ip="$1"
   mkdir -p "$CONFIG_ROOT" "$TLS_DIR"
   chmod 700 "$CONFIG_ROOT" "$TLS_DIR"
-  read -r -s -p 'Create a local reviewer password: ' reviewer_password; printf '\n'
-  read -r -s -p 'Repeat the local reviewer password: ' reviewer_password_confirm; printf '\n'
-  [[ -n "$reviewer_password" && "$reviewer_password" == "$reviewer_password_confirm" ]] || die "Reviewer passwords did not match."
-  local admin_password app_password system_password minio_password pepper tenant_key hmac_key gateway_secret reviewer_hash
+  local admin_password app_password system_password minio_password pepper tenant_key hmac_key gateway_secret auth_key
   admin_password="$(openssl rand -hex 24)"
   app_password="$(openssl rand -hex 24)"
   system_password="$(openssl rand -hex 24)"
@@ -236,8 +234,7 @@ write_secret_files() {
   tenant_key="$(openssl rand -hex 32)"
   hmac_key="$(openssl rand -hex 32)"
   gateway_secret="$(openssl rand -hex 32)"
-  reviewer_hash="$(printf '%s' "$reviewer_password" | sha256sum | awk '{print $1}')"
-  unset reviewer_password reviewer_password_confirm
+  auth_key="$(openssl rand -hex 32)"
   cat >"$ENV_FILE" <<EOF
 AWS_DEPLOYMENT_FROZEN=true
 ENVIRONMENT=local-pilot
@@ -273,7 +270,8 @@ OLLAMA_TIMEOUT_SECONDS=90
 TESSERACT_LANGUAGES=eng+hin
 LOCAL_DATA_ROOT=$DATA_ROOT
 LOCAL_STORAGE_LIMIT_BYTES=20000000000
-LOCAL_REVIEWER_PASSWORD_SHA256=$reviewer_hash
+LOCAL_AUTH_ENCRYPTION_KEY=$auth_key
+LOCAL_SESSION_TTL_MINUTES=480
 LOCAL_REVIEWER_GATEWAY_SECRET=$gateway_secret
 LOCAL_REVIEWER_EMAIL=admin@constrovet.com
 LOCAL_REVIEWER_EMAILS=admin@constrovet.com,bhagat.taran@gmail.com
@@ -296,6 +294,101 @@ LOCAL_REVIEWER_EMAILS=admin@constrovet.com,bhagat.taran@gmail.com
 EOF
   printf 'API_ORIGIN=http://edge:8787\n' >"$REVIEWER_VARS"
   chmod 600 "$ENV_FILE" "$EDGE_VARS" "$REVIEWER_VARS"
+}
+ensure_local_auth_key() {
+  [[ -f "$ENV_FILE" ]] || return
+  if ! grep -q '^LOCAL_AUTH_ENCRYPTION_KEY=' "$ENV_FILE"; then
+    printf 'LOCAL_AUTH_ENCRYPTION_KEY=%s\n' "$(openssl rand -hex 32)" >>"$ENV_FILE"
+    printf 'LOCAL_SESSION_TTL_MINUTES=480\n' >>"$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+  fi
+}
+require_external_backup_mount() {
+  local backup_root="$1" source parent transport
+  [[ -d "$backup_root" ]] || die "Backup mount does not exist: $backup_root"
+  source="$(findmnt -rn -o SOURCE --target "$backup_root" 2>/dev/null || true)"
+  [[ "$source" == /dev/* ]] || die "Backup destination must be a separately mounted block device."
+  parent="$(lsblk -ndo PKNAME "$source" 2>/dev/null | head -n 1)"
+  [[ -n "$parent" ]] || parent="$(basename "$source")"
+  transport="$(lsblk -dn -o TRAN "/dev/$parent" 2>/dev/null | tr -d ' ')"
+  [[ "$transport" == "usb" ]] || die "Backup destination must be an external USB device."
+  [[ "/dev/$parent" != "/dev/sda" && "/dev/$parent" != "/dev/sdb" ]] || die "Backup destination cannot use an internal ChallanSe or system disk."
+}
+ensure_restic_password() {
+  if [[ ! -f "$RESTIC_PASSWORD_FILE" ]]; then
+    umask 077
+    openssl rand -base64 48 >"$RESTIC_PASSWORD_FILE"
+    chmod 600 "$RESTIC_PASSWORD_FILE"
+    printf 'A new Restic password file was created. Back it up separately in an approved password manager before client activation.\n'
+  fi
+  [[ "$(stat -c '%a' "$RESTIC_PASSWORD_FILE")" == "600" ]] || die "Restic password file must have mode 600."
+}
+backup_repository_details() {
+  local backup_root="$1" repository uuid
+  repository="$backup_root/challanse-restic"
+  uuid="$(findmnt -rn -o UUID --target "$backup_root" 2>/dev/null || true)"
+  [[ -n "$uuid" ]] || die "Backup filesystem UUID could not be determined."
+  printf '%s\n%s\n' "$repository" "$(printf '%s' "$uuid" | sha256sum | awk '{print $1}')"
+}
+record_backup_run() {
+  local status="$1" repository_id="$2" snapshot_id="$3" manifest_sha256="$4" payload
+  payload="$(jq -nc --arg status "$status" --arg repositoryId "$repository_id" --arg snapshotId "$snapshot_id" --arg manifestSha256 "$manifest_sha256" '{status:$status,repositoryId:$repositoryId,snapshotId:$snapshotId,manifestSha256:$manifestSha256}')"
+  printf '%s' "$payload" | compose exec -T api python -m app.local_backup record
+}
+backup_pilot() {
+  require_encrypted_storage
+  load_env
+  need restic
+  local backup_root="${1:-}" details repository repository_id staging timestamp manifest snapshot_json snapshot_id manifest_sha256
+  [[ -n "$backup_root" ]] || die "Use: ./scripts/local-pilot.sh backup /media/USER/CLIENT-BACKUP"
+  require_external_backup_mount "$backup_root"
+  ensure_restic_password
+  mapfile -t details < <(backup_repository_details "$backup_root")
+  repository="${details[0]}"; repository_id="${details[1]}"
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  staging="$DATA_ROOT/backups/backup-$timestamp"
+  mkdir -p "$staging"
+  chmod 700 "$staging"
+  compose exec -T postgres pg_dump -U challanse_admin -d challanse_local -Fc >"$staging/postgres.dump"
+  jq -n --arg commit "$(git rev-parse HEAD)" --arg createdAt "$timestamp" --arg awsFrozen "$(repo_var AWS_DEPLOYMENT_FROZEN)" \
+    '{schemaVersion:"1.0",commitSha:$commit,createdAt:$createdAt,awsDeploymentFrozen:($awsFrozen=="true"),containsSecrets:false}' >"$staging/metadata.json"
+  manifest="$staging/manifest.sha256"
+  (cd "$DATA_ROOT" && find images exports "backups/backup-$timestamp" -type f -print0 | sort -z | xargs -0 sha256sum) >"$manifest"
+  export RESTIC_REPOSITORY="$repository" RESTIC_PASSWORD_FILE
+  if ! restic snapshots >/dev/null 2>&1; then restic init >/dev/null; fi
+  snapshot_json="$(restic backup --json "$DATA_ROOT/images" "$DATA_ROOT/exports" "$staging" | tail -n 1)"
+  snapshot_id="$(jq -r '.snapshot_id // empty' <<<"$snapshot_json")"
+  [[ "$snapshot_id" =~ ^[a-f0-9]+$ ]] || die "Restic did not return a valid snapshot ID."
+  manifest_sha256="$(sha256sum "$manifest" | awk '{print $1}')"
+  record_backup_run "SUCCEEDED" "$repository_id" "$snapshot_id" "$manifest_sha256"
+  printf 'Encrypted backup completed and verified by snapshot ID. Disconnect the USB drive after running backup-verify.\n'
+}
+backup_verify() {
+  require_encrypted_storage
+  load_env
+  need restic
+  local backup_root="${1:-}" details repository repository_id restore_root snapshot_id evidence manifest_sha256
+  [[ -n "$backup_root" ]] || die "Use: ./scripts/local-pilot.sh backup-verify /media/USER/CLIENT-BACKUP"
+  require_external_backup_mount "$backup_root"
+  ensure_restic_password
+  mapfile -t details < <(backup_repository_details "$backup_root")
+  repository="${details[0]}"; repository_id="${details[1]}"
+  export RESTIC_REPOSITORY="$repository" RESTIC_PASSWORD_FILE
+  restic check --read-data-subset=10% >/dev/null
+  snapshot_id="$(restic snapshots --json | jq -r 'sort_by(.time) | last | .short_id')"
+  [[ "$snapshot_id" =~ ^[a-f0-9]+$ ]] || die "No valid Restic snapshot was found."
+  restore_root="$DATA_ROOT/backups/restore-check-$snapshot_id"
+  [[ ! -e "$restore_root" ]] || die "Restore test directory already exists: $restore_root"
+  mkdir -p "$restore_root"
+  restic restore "$snapshot_id" --target "$restore_root" >/dev/null
+  find "$restore_root" -name postgres.dump -type f -size +0c -print -quit | grep -q . || die "Restored PostgreSQL dump is missing."
+  evidence="$DATA_ROOT/exports/backup-restore-$snapshot_id.json"
+  jq -n --arg snapshotId "$snapshot_id" --arg verifiedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{schemaVersion:"1.0",snapshotId:$snapshotId,verifiedAt:$verifiedAt,postgresDumpPresent:true,resticCheckPassed:true}' >"$evidence"
+  manifest_sha256="$(sha256sum "$evidence" | awk '{print $1}')"
+  record_backup_run "RESTORE_VERIFIED" "$repository_id" "$snapshot_id" "$manifest_sha256"
+  rm -rf -- "$restore_root"
+  printf 'Restore verification passed. Evidence: %s\n' "$evidence"
 }
 generate_ca() {
   local lan_ip="$1"
@@ -361,6 +454,7 @@ provision() {
   fi
   chown -R "$USER":"$(id -gn)" "$DATA_ROOT"/{exports,backups,fixtures}
   if [[ -e "$ENV_FILE" ]]; then
+    ensure_local_auth_key
     validate_existing_provision_state "$lan_ip"
     printf 'Validated existing local secrets and pilot CA; resuming provisioning without rotation.\n'
   else
@@ -373,6 +467,66 @@ provision() {
   (cd "$ROOT" && CI=true npm run build:local-pilot --workspace @challanse/mobile)
   compose build
   printf 'Provisioning complete. Secrets are stored with mode 600 under %s.\n' "$CONFIG_ROOT"
+}
+reviewer_enroll() {
+  load_env
+  local email password password_confirm payload
+  read -r -p 'Reviewer email: ' email
+  read -r -s -p 'Create a reviewer password (minimum 14 characters): ' password; printf '\n'
+  read -r -s -p 'Repeat the reviewer password: ' password_confirm; printf '\n'
+  [[ -n "$email" && "$password" == "$password_confirm" ]] || die "Reviewer enrollment input did not match."
+  payload="$(jq -nc --arg email "$email" --arg password "$password" '{email:$email,password:$password}')"
+  unset password password_confirm
+  printf '%s' "$payload" | compose exec -T api python -m app.local_reviewer
+}
+prepare_client_pilot() {
+  require_encrypted_storage
+  load_env
+  local configuration_file="${1:-}"
+  [[ -n "$configuration_file" && -f "$configuration_file" ]] || die "Use: ./scripts/local-pilot.sh prepare-client /secure/client-pilot.json"
+  confirm_phrase "This deletes all synthetic server records and prepares one client configuration. " "PREPARE-CONTROLLED-CLIENT-PILOT"
+  compose exec -T api python -m app.local_pilot_control_cli prepare <"$configuration_file"
+  printf 'Client configuration prepared. Enroll exactly two reviewers, complete backup restore and security evidence, then activate.\n'
+}
+activate_client_pilot() {
+  require_encrypted_storage
+  load_env
+  local approval_file="${1:-}" security_file="${2:-}" restore_file="${3:-}"
+  local operator_email retention_days payload
+  [[ -f "$approval_file" && -f "$security_file" && -f "$restore_file" ]] \
+    || die "Use: ./scripts/local-pilot.sh activate-client-pilot CLIENT_APPROVAL SECURITY_REVIEW RESTORE_EVIDENCE"
+  read -r -p 'Activating reviewer email: ' operator_email
+  read -r -p 'Retention days [30, maximum 30]: ' retention_days
+  retention_days="${retention_days:-30}"
+  [[ "$retention_days" =~ ^[0-9]+$ && "$retention_days" -ge 1 && "$retention_days" -le 30 ]] || die "Retention must be between 1 and 30 days."
+  confirm_phrase "Activate real client data mode with no uptime SLA? " "ACTIVATE-CONTROLLED-CLIENT-PILOT"
+  payload="$(jq -nc \
+    --arg operatorEmail "$operator_email" \
+    --argjson retentionDays "$retention_days" \
+    --arg clientApprovalSha256 "$(sha256sum "$approval_file" | awk '{print $1}')" \
+    --arg securityReviewSha256 "$(sha256sum "$security_file" | awk '{print $1}')" \
+    --arg backupRestoreSha256 "$(sha256sum "$restore_file" | awk '{print $1}')" \
+    '{operatorEmail:$operatorEmail,retentionDays:$retentionDays,clientApprovalSha256:$clientApprovalSha256,securityReviewSha256:$securityReviewSha256,backupRestoreSha256:$backupRestoreSha256}')"
+  printf '%s' "$payload" | compose exec -T api python -m app.local_pilot_control_cli activate
+}
+end_client_pilot() {
+  require_encrypted_storage
+  load_env
+  local operator_email payload
+  read -r -p 'Ending reviewer email: ' operator_email
+  [[ -n "$operator_email" ]] || die "A reviewer email is required."
+  confirm_phrase "End client capture and begin the configured deletion waiting period? " "END-CONTROLLED-CLIENT-PILOT"
+  payload="$(jq -nc --arg operatorEmail "$operator_email" '{operatorEmail:$operatorEmail}')"
+  printf '%s' "$payload" | compose exec -T api python -m app.local_pilot_control_cli end
+  printf 'Client pilot ended. Data remains encrypted and inaccessible to new capture until the retention period expires.\n'
+}
+purge_ended_client_pilot() {
+  require_encrypted_storage
+  load_env
+  confirm_phrase "Permanently delete ended client records and active image objects after retention? " "PURGE-ENDED-CLIENT-PILOT"
+  compose exec -T api python -m app.local_pilot_control_cli purge-ended
+  find "$DATA_ROOT/images" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+  printf 'Ended client records and image objects were purged after the enforced retention period.\n'
 }
 prewarm() {
   load_env
@@ -445,16 +599,33 @@ enroll() {
 status_cmd() {
   require_aws_freeze
   load_env
-  local failed=0
+  local failed=0 status_json pilot_mode
   compose ps
   printf '\nLocal service status:\n'
-  compose exec -T api python -c 'import json; from app.config import get_settings; from app.local_admin import local_status; print(json.dumps(local_status(get_settings()), indent=2))' || failed=1
+  status_json="$(compose exec -T api python -c 'import json; from app.config import get_settings; from app.local_admin import local_status; print(json.dumps(local_status(get_settings())))')" || failed=1
+  jq . <<<"$status_json"
+  pilot_mode="$(jq -r '.pilotMode // "unknown"' <<<"$status_json")"
+  jq -e '
+    .database == "ready" and .objectStore == "ready" and .ollama == "ready" and
+    .tesseract == "ready" and .terminalFailures == 0 and
+    (.storage.uploadsPaused | not) and .auditChain.valid == true
+  ' <<<"$status_json" >/dev/null || failed=1
+  if [[ "$pilot_mode" == "controlled-client-pilot" ]]; then
+    jq -e '.backup.status == "RESTORE_VERIFIED"' <<<"$status_json" >/dev/null || failed=1
+  fi
+  openssl x509 -checkend 2592000 -noout -in "$TLS_DIR/pilot.crt" >/dev/null || failed=1
   if [[ "$failed" -eq 0 ]]; then
-    printf 'GREEN: synthetic local pilot services are ready.\n'
+    printf 'GREEN: %s services and integrity gates are ready.\n' "$pilot_mode"
   else
     printf 'RED: one or more local pilot checks failed.\n' >&2
     return 1
   fi
+}
+config_check() {
+  require_aws_freeze
+  load_env
+  compose config --quiet
+  printf 'Local Compose configuration is valid with frozen AWS controls.\n'
 }
 download_apk() {
   local apk="$ROOT/apps/mobile/android/app/build/outputs/apk/localPilot/app-localPilot.apk"
@@ -480,7 +651,7 @@ acceptance() {
 }
 evidence() {
   load_env
-  local timestamp directory apk
+  local timestamp directory apk status_json pilot_mode backup_status
   timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
   directory="$DATA_ROOT/exports/evidence-$timestamp"
   mkdir -p "$directory"
@@ -489,14 +660,19 @@ evidence() {
   ollama list >"$directory/ollama-models.txt"
   tesseract --version >"$directory/tesseract-version.txt" 2>&1
   compose exec -T api tesseract --list-langs >"$directory/container-ocr-languages.txt" 2>&1
+  status_json="$(compose exec -T api python -c 'import json; from app.config import get_settings; from app.local_admin import local_status; print(json.dumps(local_status(get_settings())))')"
+  jq . <<<"$status_json" >"$directory/runtime-status.json"
+  cp "$ROOT/quality/gates.json" "$directory/standards-gates.json"
+  pilot_mode="$(jq -r '.pilotMode' <<<"$status_json")"
+  backup_status="$(jq -r '.backup.status' <<<"$status_json")"
   apk="$ROOT/apps/mobile/android/app/build/outputs/apk/localPilot/app-localPilot.apk"
   if [[ -f "$apk" ]]; then sha256sum "$apk" >"$directory/apk-sha256.txt"; fi
-  cat >"$directory/limitations.txt" <<'EOF'
-SYNTHETIC DATA ONLY.
+  cat >"$directory/limitations.txt" <<EOF
+Pilot mode: $pilot_mode.
 Supervised demonstration only; no uptime SLA or unattended availability.
 Local OCR and normalization results are not statutory validation.
-No real client receipt, vendor, person, GST, bank, or Tally data is authorized.
-No independent off-device backup is configured.
+Real client data is prohibited unless mode is controlled-client-pilot and all activation evidence remains valid.
+Latest recorded backup status: $backup_status.
 AWS deployment remains frozen.
 EOF
   printf 'Evidence pack created: %s\n' "$directory"
@@ -534,7 +710,15 @@ Commands:
   start --both       Start LAN and preconfigured Cloudflare Tunnel
   seed               Seed synthetic site, vendors, reviewers, and Tally data
   enroll             Create a ten-minute device enrollment link
+  reviewer-enroll    Create or rotate one reviewer's password and MFA
+  backup PATH        Create an encrypted Restic backup on an external USB mount
+  backup-verify PATH Verify repository data and restore the latest snapshot
+  prepare-client     Replace synthetic records using an approved client JSON file
+  activate-client-pilot  Enable real data only after evidence and backup gates pass
+  end-client-pilot   End capture and start the configured deletion waiting period
+  purge-ended-client-pilot  Delete ended client data only after retention expires
   status             Show one local readiness summary
+  config-check       Validate Compose and local secret bindings without starting
   download-apk       Copy the local pilot APK and print SHA-256
   acceptance         Upload and process 50 synthetic receipts
   evidence           Export commit, image, model, OCR, APK, and limits evidence
@@ -556,7 +740,15 @@ case "${1:-}" in
   start) start_stack "${2:---lan}" ;;
   seed) seed ;;
   enroll) enroll ;;
+  reviewer-enroll) reviewer_enroll ;;
+  backup) backup_pilot "${2:-}" ;;
+  backup-verify) backup_verify "${2:-}" ;;
+  prepare-client) prepare_client_pilot "${2:-}" ;;
+  activate-client-pilot) activate_client_pilot "${2:-}" "${3:-}" "${4:-}" ;;
+  end-client-pilot) end_client_pilot ;;
+  purge-ended-client-pilot) purge_ended_client_pilot ;;
   status) status_cmd ;;
+  config-check) config_check ;;
   download-apk) download_apk ;;
   acceptance) acceptance ;;
   evidence) evidence ;;

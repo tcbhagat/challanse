@@ -38,7 +38,7 @@ function EnrollmentScreen({ onConfigured }: { onConfigured: (configuration: Pilo
   }, [consumeLink]);
 
   return <View style={styles.enrollmentScreen}>
-    {IS_LOCAL_PILOT ? <Text accessibilityRole="header" style={styles.syntheticBanner}>SYNTHETIC TEST</Text> : null}
+    {IS_LOCAL_PILOT ? <Text accessibilityRole="header" style={styles.syntheticBanner}>LOCAL PILOT SETUP</Text> : null}
     <StatusBar backgroundColor="#000" barStyle="light-content" />
     <View style={styles.scanMark}><View /><View /><View /><View /></View>
     <Text style={styles.title}>Scan setup QR</Text>
@@ -67,7 +67,7 @@ export default function PilotApp() {
   if (!ready) return <View style={styles.loading}><ActivityIndicator size="large" color="#f59e0b" /></View>;
   return <SafeAreaProvider>
     {configuration ? <View style={styles.configured}>
-      {IS_LOCAL_PILOT ? <Text accessibilityRole="header" style={styles.syntheticBanner}>SYNTHETIC TEST</Text> : null}
+      {IS_LOCAL_PILOT ? <Text accessibilityRole="header" style={styles.syntheticBanner}>{configuration.pilotMode === 'controlled-client-pilot' ? 'CONTROLLED CLIENT PILOT' : 'SYNTHETIC TEST'}</Text> : null}
       <ReceiveMaterialApp configuration={configuration} />
     </View> : <EnrollmentScreen onConfigured={setConfiguration} />}
   </SafeAreaProvider>;

@@ -1,5 +1,4 @@
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +10,10 @@ from .local_ocr import prewarm_model
 from .local_storage import local_storage_percent
 from .object_store import object_store_client
 from .tenancy import system_connection
+from .tesseract_runner import TesseractExecutionError, tesseract_languages, tesseract_version
+from .pilot_control import activation_readiness, current_pilot_mode
+from .local_backup import latest_backup_status
+from .audit_chain import verify_audit_chains
 
 
 def local_status(settings: Settings) -> dict[str, Any]:
@@ -36,32 +39,31 @@ def local_status(settings: Settings) -> dict[str, Any]:
     except Exception:
         ollama_ready = False
     try:
-        tesseract_version = subprocess.run(
-            ["tesseract", "--version"], capture_output=True, text=True, timeout=5, check=True
-        ).stdout.splitlines()[0]
-        languages = set(
-            subprocess.run(
-                ["tesseract", "--list-langs"], capture_output=True, text=True, timeout=5, check=True
-            ).stdout.splitlines()[1:]
-        )
+        version = tesseract_version()
+        languages = tesseract_languages()
         required_languages = set(settings.tesseract_languages.split("+"))
         tesseract_ready = required_languages.issubset(languages)
-    except Exception:
-        tesseract_version = "unavailable"
+    except TesseractExecutionError:
+        version = "unavailable"
         tesseract_ready = False
     try:
         object_store_client(settings).head_bucket(Bucket=settings.receipt_bucket)
         object_store_ready = True
     except Exception:
         object_store_ready = False
+    pilot_mode = current_pilot_mode(settings)
     return {
-        "syntheticMode": True,
+        "syntheticMode": pilot_mode == "synthetic-demo",
+        "pilotMode": pilot_mode,
+        "activation": activation_readiness(settings),
+        "backup": latest_backup_status(),
+        "auditChain": verify_audit_chains(settings.system_database_url or settings.database_url),
         "database": "ready",
         "objectStore": "ready" if object_store_ready else "unavailable",
         "ollama": "ready" if ollama_ready else "unavailable",
         "model": settings.ollama_model,
         "tesseract": "ready" if tesseract_ready else "unavailable",
-        "tesseractVersion": tesseract_version,
+        "tesseractVersion": version,
         "queueDepth": int(queue["pending"] or 0),
         "terminalFailures": int(queue["failed"] or 0),
         "storage": {
@@ -79,8 +81,15 @@ def reset_synthetic_data(settings: Settings, confirmation: str) -> None:
         raise RuntimeError("synthetic_mode_required")
     if confirmation != "RESET SYNTHETIC DATA":
         raise RuntimeError("synthetic_reset_confirmation_invalid")
+    if current_pilot_mode(settings) != "synthetic-demo":
+        raise RuntimeError("controlled_client_pilot_reset_forbidden")
     with system_connection(settings.system_database_url or settings.database_url) as connection:
-        connection.execute("TRUNCATE TABLE organizations, users, pilot_requests CASCADE")
+        connection.execute("DELETE FROM local_reviewer_sessions")
+        connection.execute("DELETE FROM local_reviewer_credentials")
+        connection.execute("DELETE FROM local_auth_events")
+        connection.execute("DELETE FROM organizations")
+        connection.execute("DELETE FROM users")
+        connection.execute("DELETE FROM pilot_requests")
         connection.commit()
 
 

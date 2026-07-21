@@ -7,6 +7,7 @@ from app.local_ocr import normalize_text, run_local_ocr, validate_normalized
 from app.local_storage import local_uploads_paused
 from app.object_store import object_encryption_headers
 from app.providers import run_ocr
+from app.local_auth import login_page, parse_login_form
 
 
 def test_local_object_store_omits_cloud_kms_headers() -> None:
@@ -125,3 +126,15 @@ def test_production_configuration_rejects_local_providers() -> None:
     errors = settings.production_errors()
     assert "EVENT_QUEUE_PROVIDER_must_be_sqs" in errors
     assert "OCR_PROVIDER_must_be_textract" in errors
+
+
+def test_local_login_form_does_not_allow_open_redirect() -> None:
+    page = login_page(next_path="//attacker.example")
+    assert 'value="/"' in page
+    assert "attacker.example" not in page
+
+
+def test_local_login_form_parsing_is_bounded_and_explicit() -> None:
+    assert parse_login_form(b"email=a%40example.com&password=long-password&second_factor=123456&next=%2Freview") == (
+        "a@example.com", "long-password", "123456", "/review"
+    )

@@ -6,6 +6,19 @@ export const API_BASE_URL = (configuredBase || '/api').replace(/\/$/, '');
 export const PUBLIC_API_URL = (configuredPublicApi || 'https://api.challanse.constrovet.com').replace(/\/$/, '');
 let activeSiteId = typeof sessionStorage === 'undefined' ? '' : sessionStorage.getItem('challanse.activeSiteId') || '';
 
+function cookieValue(name: string) {
+  if (typeof document === 'undefined') return '';
+  const prefix = `${encodeURIComponent(name)}=`;
+  const value = document.cookie.split(';').map((part) => part.trim()).find((part) => part.startsWith(prefix));
+  return value ? decodeURIComponent(value.slice(prefix.length)) : '';
+}
+
+function csrfHeaders(method = 'GET'): Record<string, string> {
+  return ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase())
+    ? { 'X-CSRF-Token': cookieValue('challanse_local_csrf') }
+    : {};
+}
+
 export function setActiveSiteId(siteId: string) {
   activeSiteId = siteId;
   if (typeof sessionStorage !== 'undefined') {
@@ -23,11 +36,13 @@ export class ApiError extends Error {
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = init?.method || 'GET';
   const response = await fetch(`${API_BASE_URL}${path}`, {
     credentials: 'include',
     ...init,
     headers: {
       'Content-Type': 'application/json',
+      ...csrfHeaders(method),
       ...(activeSiteId ? { 'X-ChallanSe-Site-Id': activeSiteId } : {}),
       ...init?.headers,
     },

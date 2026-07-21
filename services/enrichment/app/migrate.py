@@ -51,6 +51,9 @@ def run_migrations() -> None:
             cursor.execute("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO challanse_app, challanse_system")
             cursor.execute("REVOKE ALL ON TABLE users, identity_links, pilot_requests, schema_migrations FROM challanse_app")
             cursor.execute(
+                "REVOKE ALL ON TABLE local_reviewer_credentials, local_reviewer_sessions, local_auth_events, local_pilot_control, local_backup_runs FROM PUBLIC, challanse_app"
+            )
+            cursor.execute(
                 """
                 INSERT INTO tenant_context_secrets (singleton, secret)
                 VALUES (TRUE, decode(%s, 'hex'))

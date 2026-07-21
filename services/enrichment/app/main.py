@@ -1,11 +1,10 @@
 import logging
 import json as json_module
-import base64
-import hashlib
-import hmac
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
+from fastapi.responses import HTMLResponse, RedirectResponse
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from pydantic import ValidationError
 
@@ -68,6 +67,17 @@ from .schemas import (
 from .tenancy import system_connection
 from .integrity import assess_play_integrity
 from .local_admin import local_status, prewarm_local_model, reset_synthetic_data
+from .local_auth import (
+    CSRF_COOKIE,
+    SESSION_COOKIE,
+    LocalAuthError,
+    authenticate as authenticate_local_reviewer,
+    login_page,
+    logout as logout_local_reviewer,
+    parse_login_form,
+    validate_session,
+)
+from .pilot_control import PilotControlError, require_capture_enabled
 
 
 logger = logging.getLogger("challanse.enrichment")
@@ -178,17 +188,73 @@ async def authoritative_local_status(request: Request, settings=Depends(get_sett
 
 @app.get("/v1/local/auth", status_code=status.HTTP_204_NO_CONTENT)
 def authoritative_local_auth(request: Request, settings=Depends(get_settings)) -> Response:
-    if not settings.synthetic_mode or settings.environment != "local-pilot" or not settings.local_reviewer_password_sha256:
+    if settings.environment != "local-pilot" or not settings.local_auth_encryption_key:
         raise HTTPException(status_code=404, detail="NOT_FOUND")
-    authorization = request.headers.get("Authorization", "")
     try:
-        username, password = base64.b64decode(authorization.removeprefix("Basic "), validate=True).decode().split(":", 1)
-    except (ValueError, UnicodeDecodeError):
-        username, password = "", ""
-    digest = hashlib.sha256(password.encode()).hexdigest()
-    if username != "reviewer" or not hmac.compare_digest(digest, settings.local_reviewer_password_sha256):
-        return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="ChallanSe Synthetic Pilot"'})
-    return Response(status_code=204)
+        identity = validate_session(
+            settings,
+            request.cookies.get(SESSION_COOKIE, ""),
+            request.headers.get("X-CSRF-Token", ""),
+            request.headers.get("X-Forwarded-Method", request.method),
+        )
+    except LocalAuthError:
+        next_path = request.headers.get("X-Forwarded-Uri", "/")
+        return RedirectResponse(url=f"/login?next={quote(next_path, safe='/')}", status_code=303)
+    return Response(
+        status_code=204,
+        headers={
+            "X-ChallanSe-Local-Reviewer-Email": identity.email,
+            "X-ChallanSe-Local-Reviewer-Subject": identity.subject,
+        },
+    )
+
+
+@app.get("/login", response_class=HTMLResponse)
+def local_login_page(next: str = Query(default="/"), settings=Depends(get_settings)) -> HTMLResponse:
+    if settings.environment != "local-pilot":
+        raise HTTPException(status_code=404, detail="NOT_FOUND")
+    return HTMLResponse(login_page(next_path=next), headers={"Cache-Control": "no-store"})
+
+
+@app.post("/login")
+async def local_login(request: Request, settings=Depends(get_settings)) -> Response:
+    if settings.environment != "local-pilot":
+        raise HTTPException(status_code=404, detail="NOT_FOUND")
+    body = await request.body()
+    if len(body) > 8_192:
+        raise HTTPException(status_code=413, detail="request_too_large")
+    try:
+        email, password, second_factor, next_path = parse_login_form(body)
+        token, csrf, _identity = authenticate_local_reviewer(settings, email, password, second_factor)
+    except (LocalAuthError, UnicodeDecodeError, ValueError):
+        return HTMLResponse(login_page("Sign-in failed or the account is temporarily locked."), status_code=401, headers={"Cache-Control": "no-store"})
+    safe_next = next_path if next_path.startswith("/") and not next_path.startswith("//") else "/"
+    response = RedirectResponse(url=safe_next, status_code=303)
+    max_age = settings.local_session_ttl_minutes * 60
+    response.set_cookie(SESSION_COOKIE, token, max_age=max_age, secure=True, httponly=True, samesite="strict", path="/")
+    response.set_cookie(CSRF_COOKIE, csrf, max_age=max_age, secure=True, httponly=False, samesite="strict", path="/")
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.post("/logout")
+def local_logout(request: Request, settings=Depends(get_settings)) -> Response:
+    if settings.environment != "local-pilot":
+        raise HTTPException(status_code=404, detail="NOT_FOUND")
+    try:
+        validate_session(
+            settings,
+            request.cookies.get(SESSION_COOKIE, ""),
+            request.cookies.get(CSRF_COOKIE, ""),
+            "POST",
+        )
+    except LocalAuthError:
+        pass
+    logout_local_reviewer(settings, request.cookies.get(SESSION_COOKIE, ""))
+    response = RedirectResponse(url="/login", status_code=303)
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    response.delete_cookie(CSRF_COOKIE, path="/")
+    return response
 
 
 @app.post("/v1/admin/local/prewarm")
@@ -281,6 +347,7 @@ async def authoritative_mobile_telemetry(request: Request, settings=Depends(get_
 async def authoritative_upload_create(request: Request, settings=Depends(get_settings)) -> dict[str, object]:
     raw = await _verify_internal_request(request, settings)
     try:
+        require_capture_enabled(settings)
         device = authenticate_device(settings, request.headers.get("Authorization", ""))
         consume_device_nonce(
             settings, device, request.headers.get("X-ChallanSe-Device-Timestamp", ""), request.headers.get("X-ChallanSe-Nonce", "")
@@ -294,6 +361,8 @@ async def authoritative_upload_create(request: Request, settings=Depends(get_set
         return create_upload_session(settings, device, payload, integrity_status)
     except ValidationError as error:
         raise HTTPException(status_code=422, detail="INVALID_UPLOAD_SESSION") from error
+    except PilotControlError as error:
+        raise HTTPException(status_code=423, detail=str(error)) from error
     except AuthoritativeError as error:
         raise _authoritative_failure(error) from error
 
@@ -311,12 +380,15 @@ async def authoritative_upload_status(upload_id: UUID, request: Request, setting
 async def authoritative_upload_part(upload_id: UUID, part_number: int, request: Request, settings=Depends(get_settings)) -> Response:
     raw = await _verify_internal_request(request, settings)
     try:
+        require_capture_enabled(settings)
         device = authenticate_device(settings, request.headers.get("Authorization", ""))
         consume_device_nonce(
             settings, device, request.headers.get("X-ChallanSe-Device-Timestamp", ""), request.headers.get("X-ChallanSe-Nonce", "")
         )
         put_upload_part(settings, device, upload_id, part_number, raw, request.headers.get("X-Part-Sha256", ""))
         return Response(status_code=204)
+    except PilotControlError as error:
+        raise HTTPException(status_code=423, detail=str(error)) from error
     except AuthoritativeError as error:
         raise _authoritative_failure(error) from error
 
@@ -325,11 +397,14 @@ async def authoritative_upload_part(upload_id: UUID, part_number: int, request: 
 async def authoritative_upload_complete(upload_id: UUID, request: Request, settings=Depends(get_settings)) -> dict[str, object]:
     await _verify_internal_request(request, settings)
     try:
+        require_capture_enabled(settings)
         device = authenticate_device(settings, request.headers.get("Authorization", ""))
         consume_device_nonce(
             settings, device, request.headers.get("X-ChallanSe-Device-Timestamp", ""), request.headers.get("X-ChallanSe-Nonce", "")
         )
         return complete_upload_session(settings, device, upload_id)
+    except PilotControlError as error:
+        raise HTTPException(status_code=423, detail=str(error)) from error
     except AuthoritativeError as error:
         raise _authoritative_failure(error) from error
 

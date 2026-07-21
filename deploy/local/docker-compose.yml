@@ -33,18 +33,27 @@ x-backend: &backend
     TESSERACT_LANGUAGES: ${TESSERACT_LANGUAGES}
     LOCAL_DATA_ROOT: ${LOCAL_DATA_ROOT}
     LOCAL_STORAGE_LIMIT_BYTES: ${LOCAL_STORAGE_LIMIT_BYTES}
-    LOCAL_REVIEWER_PASSWORD_SHA256: ${LOCAL_REVIEWER_PASSWORD_SHA256}
+    LOCAL_AUTH_ENCRYPTION_KEY: ${LOCAL_AUTH_ENCRYPTION_KEY}
+    LOCAL_SESSION_TTL_MINUTES: ${LOCAL_SESSION_TTL_MINUTES:-480}
     PUBLIC_API_URL: ${PUBLIC_API_URL}
     REVIEW_DASHBOARD_URL: ${REVIEW_DASHBOARD_URL}
     PLAY_INTEGRITY_PROVIDER: disabled
   extra_hosts:
     - host.docker.internal:host-gateway
-  networks: [pilot]
+  networks: [backend, frontend]
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: [/tmp:rw,noexec,nosuid,size=128m]
+  pids_limit: 256
+  mem_limit: 1g
+  cpus: 2.0
   restart: "no"
 
 services:
   postgres:
-    image: postgres:17.5
+    image: postgres:17.5@sha256:aadf2c0696f5ef357aa7a68da995137f0cf17bad0bf6e1f17de06ae5c769b302
+    user: "999:999"
     environment:
       POSTGRES_DB: challanse_local
       POSTGRES_USER: challanse_admin
@@ -56,11 +65,19 @@ services:
       interval: 3s
       timeout: 3s
       retries: 30
-    networks: [pilot]
+    networks: [backend]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/var/run/postgresql:rw,nosuid,size=16m, /tmp:rw,noexec,nosuid,size=32m]
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 1.5
     restart: "no"
 
   minio:
-    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e
+    user: "1000:1000"
     command: server /data --console-address :9001
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
@@ -72,11 +89,18 @@ services:
       interval: 3s
       timeout: 3s
       retries: 30
-    networks: [pilot]
+    networks: [backend]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp:rw,noexec,nosuid,size=64m]
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 1.5
     restart: "no"
 
   minio-init:
-    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z@sha256:aead63c77f9db9107f1696fb08ecb0faeda23729cde94b0f663edf4fe09728e3
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
@@ -89,7 +113,11 @@ services:
         mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" >/dev/null;
         mc mb --ignore-existing local/challanse-receipts >/dev/null;
         mc anonymous set none local/challanse-receipts >/dev/null
-    networks: [pilot]
+    networks: [backend]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp:rw,noexec,nosuid,size=32m, /root/.mc:rw,noexec,nosuid,size=16m]
     restart: "no"
 
   migrate:
@@ -123,6 +151,7 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    networks: [backend, ocr-egress]
     volumes:
       - ${CHALLANSE_DATA_ROOT}:/srv/challanse:ro
     restart: "no"
@@ -138,7 +167,14 @@ services:
     depends_on:
       api:
         condition: service_healthy
-    networks: [pilot]
+    networks: [frontend]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp:rw,noexec,nosuid,size=128m, /app/apps/edge/.wrangler:rw,noexec,nosuid,size=64m]
+    pids_limit: 256
+    mem_limit: 768m
+    cpus: 1.0
     restart: "no"
 
   reviewer-worker:
@@ -150,11 +186,18 @@ services:
     volumes:
       - ${CHALLANSE_RUNTIME_ROOT}/reviewer.dev.vars:/app/apps/reviewer/.dev.vars:ro
     depends_on: [edge]
-    networks: [pilot]
+    networks: [frontend]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp:rw,noexec,nosuid,size=128m, /app/apps/reviewer/.wrangler:rw,noexec,nosuid,size=64m]
+    pids_limit: 256
+    mem_limit: 512m
+    cpus: 0.75
     restart: "no"
 
   gateway:
-    image: caddy:2.10.2-alpine
+    image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
     environment:
       CHALLANSE_LAN_IP: ${CHALLANSE_LAN_IP:?Set CHALLANSE_LAN_IP}
       LOCAL_REVIEWER_GATEWAY_SECRET: ${LOCAL_REVIEWER_GATEWAY_SECRET}
@@ -166,19 +209,39 @@ services:
       - ${CHALLANSE_RUNTIME_ROOT}/tls:/etc/challanse-tls:ro
       - ../../apps/reviewer/dist:/srv/reviewer:ro
     depends_on: [edge]
-    networks: [pilot]
+    networks: [frontend]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/data:rw,noexec,nosuid,size=32m, /config:rw,noexec,nosuid,size=16m, /tmp:rw,noexec,nosuid,size=16m]
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 0.5
     restart: "no"
 
   cloudflared:
-    image: cloudflare/cloudflared:2026.7.0
+    image: cloudflare/cloudflared:2026.7.0@sha256:5e49861633763e8933475477c20bae6039ed47f32c1d267a34babc347f28f0df
     profiles: [remote]
     environment:
       TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
     command: ["tunnel", "--no-autoupdate", "run"]
     depends_on: [edge, reviewer-worker]
-    networks: [pilot]
+    networks: [frontend, tunnel-egress]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp:rw,noexec,nosuid,size=32m]
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 0.5
     restart: "no"
 
 networks:
-  pilot:
+  backend:
+    internal: true
+  frontend:
+    internal: true
+  ocr-egress:
+    internal: true
+  tunnel-egress:
     internal: false

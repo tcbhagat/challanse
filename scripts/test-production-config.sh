@@ -29,9 +29,10 @@ bash -n scripts/test-budget-controls.sh
 bash -n scripts/zero-cost-readiness.sh
 bash -n scripts/test-zero-cost-readiness.sh
 bash -n scripts/local-pilot.sh
+bash -n scripts/quality-loop.sh
 bash -n scripts/test-local-pilot-storage.sh
 shellcheck -e SC1090 scripts/test-waf-provisioning.sh
-shellcheck -e SC1090 scripts/go-live.sh scripts/rollback-production.sh scripts/local-pilot.sh scripts/test-local-pilot-storage.sh scripts/test-production-config.sh scripts/test-turnstile-recovery.sh scripts/test-production-hardening.sh scripts/test-budget-controls.sh scripts/zero-cost-readiness.sh scripts/test-zero-cost-readiness.sh
+shellcheck -e SC1090 scripts/go-live.sh scripts/rollback-production.sh scripts/local-pilot.sh scripts/quality-loop.sh scripts/test-local-pilot-storage.sh scripts/test-production-config.sh scripts/test-turnstile-recovery.sh scripts/test-production-hardening.sh scripts/test-budget-controls.sh scripts/zero-cost-readiness.sh scripts/test-zero-cost-readiness.sh
 bash scripts/test-local-pilot-storage.sh
 test -x scripts/go-live.sh
 test -x scripts/rollback-production.sh
@@ -62,6 +63,16 @@ if contains_forbidden -RInE --exclude='test-production-config.sh' --exclude='loc
 fi
 grep -Fq 'applicationIdSuffix ".localpilot"' apps/mobile/android/app/build.gradle
 grep -Fq 'SYNTHETIC TEST' apps/mobile/src/PilotApp.tsx
+grep -Fq 'CONTROLLED CLIENT PILOT' apps/mobile/src/PilotApp.tsx
+grep -Fq 'PasswordHasher(time_cost=3, memory_cost=65_536, parallelism=2)' services/enrichment/app/local_auth.py
+grep -Fq 'restoreVerifiedWithin30Days' services/enrichment/app/pilot_control.py
+grep -Fq 'encryptedBackupWithin24Hours' services/enrichment/app/pilot_control.py
+grep -Fq 'AWS_DEPLOYMENT_FROZEN must equal true' scripts/quality-loop.sh
+grep -Fq 'humanOnlyActions' quality/gates.json
+if contains_forbidden -RInE --exclude='test-production-config.sh' 'LOCAL_REVIEWER_PASSWORD_SHA256|subprocess\.(run|Popen).*tesseract' services deploy scripts; then
+  echo "Shared reviewer credentials or ad hoc Tesseract subprocesses are forbidden." >&2
+  exit 1
+fi
 grep -Fq 'Type DEPLOY' scripts/go-live.sh
 grep -Fq 'https-status' scripts/go-live.sh
 grep -Fq 'harden-github' scripts/go-live.sh

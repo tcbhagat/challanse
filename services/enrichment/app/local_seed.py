@@ -1,9 +1,12 @@
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from psycopg.rows import dict_row
+
 from .bootstrap import BootstrapVendor, TenantBootstrap, bootstrap_tenant
 from .config import get_settings
 from .reconciliation import import_tally_csv
 from .tenancy import system_connection
+from .pilot_control import SYNTHETIC_ORGANIZATION_ID, current_pilot_mode
 
 
 ORGANIZATION_ID = UUID("10000000-0000-4000-8000-000000000001")
@@ -61,6 +64,14 @@ def seed_local_pilot() -> dict[str, str]:
     settings = get_settings()
     if settings.environment != "local-pilot" or not settings.synthetic_mode:
         raise RuntimeError("local_seed_requires_synthetic_mode")
+    if current_pilot_mode(settings) != "synthetic-demo":
+        raise RuntimeError("controlled_client_pilot_seed_forbidden")
+    with system_connection(settings.system_database_url, row_factory=dict_row) as connection:
+        real_organization = connection.execute(
+            "SELECT 1 FROM organizations WHERE id <> %s LIMIT 1", (SYNTHETIC_ORGANIZATION_ID,)
+        ).fetchone()
+    if real_organization:
+        raise RuntimeError("client_configuration_present_seed_forbidden")
     bootstrap_tenant(
         settings,
         TenantBootstrap(

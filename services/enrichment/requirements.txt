@@ -13,3 +13,5 @@ opentelemetry-instrumentation-fastapi==0.64b0
 opentelemetry-instrumentation-httpx==0.64b0
 setuptools==83.0.0
 google-auth==2.49.1
+argon2-cffi==25.1.0
+pyotp==2.9.0

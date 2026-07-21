@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "1.0",
+  "standardsAlignedNotCertified": true,
+  "standards": {
+    "OWASP_ASVS_2": ["python-security", "application-tests", "production-controls"],
+    "OWASP_API_TOP_10": ["application-tests", "edge-tests", "production-controls"],
+    "OWASP_MASVS_L1": ["android-tests", "android-build"],
+    "CIS_DOCKER_APPLICABLE": ["compose-validation", "container-security"],
+    "WCAG_2_2_AA": ["reviewer-build", "lighthouse"],
+    "RECOVERY_CONTROLS": ["backup-status", "runtime-status"]
+  },
+  "blockingSeverities": ["CRITICAL", "HIGH"],
+  "humanOnlyActions": [
+    "merge",
+    "deploy",
+    "activate-client-data",
+    "rotate-credentials",
+    "change-retention",
+    "delete-data",
+    "run-active-data-migration",
+    "change-network-exposure",
+    "release-mobile-build"
+  ],
+  "cleanCyclesRequired": 3
+}

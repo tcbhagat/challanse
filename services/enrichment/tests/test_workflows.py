@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 import boto3
 import psycopg
 import pytest
+import pyotp
 from fastapi.testclient import TestClient
 from PIL import Image
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
@@ -40,6 +41,7 @@ from app.images import InvalidReceiptImage, verify_webp, webp_to_png
 from app.integrity import _trusted as trusted_play_integrity_payload
 from app.ingress import MemoryIngressStore, PostgresIngressStore
 from app.jobs import apply_retention, generate_digests, generate_nightly_report, record_telemetry
+from app.local_auth import LocalAuthError, authenticate, enroll_reviewer, validate_session
 from app.main import app, get_ingress_store_dependency
 from app.notifications import DigestReceipt, aggregate_digests
 from app.outbox import dispatch_outbox_once
@@ -382,6 +384,57 @@ def test_postgres_local_queue_is_durable_and_idempotent() -> None:
     assert claimed.event == event
     complete_local_message(database_url, claimed)
     assert claim_local_message(database_url) is None
+
+
+@pytest.mark.integration
+def test_local_reviewer_auth_requires_password_mfa_session_and_csrf() -> None:
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("TEST_DATABASE_URL is not configured")
+    reset_test_database(database_url)
+    user_id = uuid4()
+    with psycopg.connect(database_url) as connection:
+        connection.execute("INSERT INTO users (id, email, display_name, active) VALUES (%s, 'reviewer@example.com', 'Reviewer', TRUE)", (user_id,))
+        connection.commit()
+    settings = Settings(
+        ENVIRONMENT="local-pilot",
+        SYSTEM_DATABASE_URL=database_url,
+        LOCAL_AUTH_ENCRYPTION_KEY="ab" * 32,
+        LOCAL_SESSION_TTL_MINUTES=60,
+    )
+    uri, recovery_codes = enroll_reviewer(settings, "reviewer@example.com", "correct horse battery staple")
+    secret = pyotp.parse_uri(uri).secret
+    token, csrf, identity = authenticate(
+        settings,
+        "reviewer@example.com",
+        "correct horse battery staple",
+        pyotp.TOTP(secret).now(),
+    )
+    assert identity.email == "reviewer@example.com"
+    assert validate_session(settings, token, "", "GET").email == "reviewer@example.com"
+    with pytest.raises(LocalAuthError, match="csrf_invalid"):
+        validate_session(settings, token, "wrong", "PATCH")
+    assert validate_session(settings, token, csrf, "PATCH").email == "reviewer@example.com"
+    assert len(recovery_codes) == 8
+
+
+@pytest.mark.integration
+def test_local_reviewer_auth_locks_after_five_failures() -> None:
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("TEST_DATABASE_URL is not configured")
+    reset_test_database(database_url)
+    with psycopg.connect(database_url) as connection:
+        connection.execute("INSERT INTO users (id, email, display_name, active) VALUES (%s, 'locked@example.com', 'Locked', TRUE)", (uuid4(),))
+        connection.commit()
+    settings = Settings(ENVIRONMENT="local-pilot", SYSTEM_DATABASE_URL=database_url, LOCAL_AUTH_ENCRYPTION_KEY="cd" * 32)
+    uri, _codes = enroll_reviewer(settings, "locked@example.com", "correct horse battery staple")
+    factor = pyotp.TOTP(pyotp.parse_uri(uri).secret).now()
+    for _ in range(5):
+        with pytest.raises(LocalAuthError, match="invalid_credentials"):
+            authenticate(settings, "locked@example.com", "wrong password", factor)
+    with pytest.raises(LocalAuthError, match="account_locked"):
+        authenticate(settings, "locked@example.com", "correct horse battery staple", factor)
 
 
 def test_webp_integrity_and_in_memory_png_conversion() -> None:

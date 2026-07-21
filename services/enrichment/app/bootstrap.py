@@ -1,4 +1,3 @@
-import hashlib
 import json
 import os
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -8,6 +7,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
 from .config import get_settings
+from .audit_chain import audit_event_hash
 from .tenancy import system_connection
 
 
@@ -123,7 +123,7 @@ def bootstrap_tenant(settings=None, payload: TenantBootstrap | None = None) -> d
             (payload.organization_id, user_id),
         )
         event_body = {"organizationId": str(payload.organization_id), "siteId": str(payload.site_id), "vendorCount": len(payload.vendors)}
-        event_hash = hashlib.sha256(json.dumps(event_body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        event_hash = audit_event_hash("", event_body)
         connection.execute(
             """
             INSERT INTO audit_events

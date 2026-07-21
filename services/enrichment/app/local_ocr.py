@@ -1,6 +1,5 @@
 import json
 import re
-import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +8,7 @@ from typing import Any
 import httpx
 
 from .config import Settings
+from .tesseract_runner import run_tesseract, tesseract_version, validate_languages
 
 
 NORMALIZED_SCHEMA = {
@@ -35,27 +35,18 @@ class LocalOcrOutput:
     warnings: list[str]
 
 
-def _tesseract_version() -> str:
-    result = subprocess.run(
-        ["tesseract", "--version"], capture_output=True, text=True, timeout=10, check=True
-    )
-    return result.stdout.splitlines()[0].strip()
-
-
 def extract_text(png_bytes: bytes, languages: str) -> tuple[str, float, str]:
+    validated_languages = validate_languages(languages)
     with tempfile.TemporaryDirectory(prefix="challanse-ocr-") as directory:
         image_path = Path(directory) / "receipt.png"
         image_path.write_bytes(png_bytes)
-        result = subprocess.run(
-            ["tesseract", str(image_path), "stdout", "-l", languages, "tsv"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=True,
-        )
+        output = run_tesseract(
+            (str(image_path), "stdout", "-l", validated_languages, "tsv"),
+            timeout_seconds=60,
+        ).stdout
     words: list[str] = []
     confidences: list[float] = []
-    for index, line in enumerate(result.stdout.splitlines()):
+    for index, line in enumerate(output.splitlines()):
         if index == 0 or not line.strip():
             continue
         columns = line.split("\t")
@@ -69,7 +60,7 @@ def extract_text(png_bytes: bytes, languages: str) -> tuple[str, float, str]:
         if word and confidence >= 0:
             words.append(word)
             confidences.append(confidence)
-    return " ".join(words), (sum(confidences) / len(confidences) if confidences else 0.0), _tesseract_version()
+    return " ".join(words), (sum(confidences) / len(confidences) if confidences else 0.0), tesseract_version()
 
 
 def _traceable_text(value: str | None, raw_text: str) -> bool:
