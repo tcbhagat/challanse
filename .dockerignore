@@ -17,6 +17,8 @@ node_modules
 **/*.aab
 **/*.jks
 **/*.keystore
+**/*.key
+**/*.vars
 **/local.properties
 *.log
 .env
