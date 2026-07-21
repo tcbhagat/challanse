@@ -42,6 +42,7 @@ from app.integrity import _trusted as trusted_play_integrity_payload
 from app.ingress import MemoryIngressStore, PostgresIngressStore
 from app.jobs import apply_retention, generate_digests, generate_nightly_report, record_telemetry
 from app.local_auth import LocalAuthError, authenticate, enroll_reviewer, validate_session
+from app.pilot_control import PilotControlError, require_capture_enabled
 from app.main import app, get_ingress_store_dependency
 from app.notifications import DigestReceipt, aggregate_digests
 from app.outbox import dispatch_outbox_once
@@ -87,7 +88,7 @@ SITE_ID = "22222222-2222-4222-8222-222222222222"
 ORGANIZATION_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 HMAC_KEY_ID = "edge-current"
 HMAC_SECRET = "test-edge-secret"
-TENANT_CONTEXT_HMAC_KEY = "7f4b6d8e905ca22ddf3234f6c5551d9a2a712df06f28da7f13a4a92cadf1108c"
+TENANT_CONTEXT_HMAC_KEY = hashlib.sha256(b"challanse-test-tenant-context").hexdigest()
 
 
 class FakeResponse:
@@ -435,6 +436,23 @@ def test_local_reviewer_auth_locks_after_five_failures() -> None:
             authenticate(settings, "locked@example.com", "wrong password", factor)
     with pytest.raises(LocalAuthError, match="account_locked"):
         authenticate(settings, "locked@example.com", "correct horse battery staple", factor)
+
+
+@pytest.mark.integration
+def test_ended_controlled_pilot_rejects_new_capture() -> None:
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("TEST_DATABASE_URL is not configured")
+    reset_test_database(database_url)
+    settings = Settings(ENVIRONMENT="local-pilot", SYSTEM_DATABASE_URL=database_url)
+    require_capture_enabled(settings)
+    with psycopg.connect(database_url) as connection:
+        connection.execute(
+            "UPDATE local_pilot_control SET mode = 'controlled-client-pilot', ended_at = NOW() WHERE singleton"
+        )
+        connection.commit()
+    with pytest.raises(PilotControlError, match="controlled_client_pilot_ended"):
+        require_capture_enabled(settings)
 
 
 def test_webp_integrity_and_in_memory_png_conversion() -> None:

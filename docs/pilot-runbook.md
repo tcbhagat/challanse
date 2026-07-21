@@ -39,7 +39,7 @@
 - Approved SSID is a data-cost control and is never treated as physical-presence proof.
 - Review queue age, DLQ, API errors, database capacity, upload failures, certificate expiry, and budget alarms each business day.
 - Generate organization-scoped audit exports through authenticated reviewer routes; never export one tenant's data from another tenant context.
-- Never log images, OCR text, credentials, GST/IRN/Udyam/bank values, or personal contacts.
+- Never log images, OCR text, login material, GST/IRN/Udyam/bank values, or personal contacts.
 
 ## Backup and recovery
 

@@ -203,4 +203,11 @@ if grep -RIE --exclude='test-production-config.sh' '(gho_[A-Za-z0-9]+|sk_live_[A
   echo "Potential committed credential detected." >&2
   exit 1
 fi
+grep -Fq 'RUNTIME_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/challanse-local-runtime"' scripts/local-pilot.sh
+grep -Fxq '.local-runtime' .dockerignore
+grep -Fxq '**/*.key' .dockerignore
+if grep -Fq 'RUNTIME_ROOT="$ROOT/' scripts/local-pilot.sh; then
+  echo "Generated local runtime material must remain outside the repository." >&2
+  exit 1
+fi
 echo "Production configuration checks passed."

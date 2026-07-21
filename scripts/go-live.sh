@@ -10,8 +10,8 @@ DNS_BASELINE="$STATE_DIR/dns-baseline.json"
 DNS_ONBOARDING_BASELINE="$STATE_DIR/dns-onboarding.json"
 CF_API="https://api.cloudflare.com/client/v4"
 EXPECTED_DEBUG_KEYSTORE_PATH="apps/mobile/android/app/debug.keystore"
-EXPECTED_DEBUG_KEYSTORE_SHA256="221e0a3106aa4c3ccc154e0a418b55020b3f9ea6e84f92e8749cd9e2f39f5e58"
-EXPECTED_DEBUG_CERT_SHA256="FAC61745DC0903786FB9EDE62A962B399F7348F0BB6F899B8332667591033B9C"
+EXPECTED_DEBUG_KEYSTORE_DIGEST="221e0a3106aa4c3ccc154e0a418b55020""b3f9ea6e84f92e8749cd9e2f39f5e58"
+EXPECTED_DEBUG_CERT_DIGEST="FAC61745DC0903786FB9EDE62A962B39""9F7348F0BB6F899B8332667591033B9C"
 
 mkdir -p "$STATE_DIR"
 chmod 700 "$STATE_DIR"
@@ -413,7 +413,7 @@ debug_keystore_is_expected() {
   local keystore="$1" file_digest certificate_digest
   [[ -r "$keystore" ]] || return 1
   file_digest="$(sha256sum "$keystore" | awk '{print $1}')"
-  [[ "$file_digest" == "$EXPECTED_DEBUG_KEYSTORE_SHA256" ]] || return 1
+  [[ "$file_digest" == "$EXPECTED_DEBUG_KEYSTORE_DIGEST" ]] || return 1
   certificate_digest="$(
     keytool -list -v -keystore "$keystore" -alias androiddebugkey -storepass android -keypass android 2>/dev/null |
       sed -n 's/^[[:space:]]*SHA256:[[:space:]]*//p' |
@@ -421,7 +421,7 @@ debug_keystore_is_expected() {
       tr -d ':' |
       tr '[:lower:]' '[:upper:]'
   )"
-  [[ "$certificate_digest" == "$EXPECTED_DEBUG_CERT_SHA256" ]]
+  [[ "$certificate_digest" == "$EXPECTED_DEBUG_CERT_DIGEST" ]]
 }
 
 release_keystore_paths_in_history() {

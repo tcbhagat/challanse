@@ -163,7 +163,7 @@ local_staging() {
   python3 -m venv /tmp/challanse-venv
   /tmp/challanse-venv/bin/pip install --quiet --requirement services/enrichment/requirements-dev.txt
   TEST_DATABASE_URL="postgresql://challanse:challanse-test-only@127.0.0.1:${postgres_port}/challanse_test" \
-    TENANT_CONTEXT_HMAC_KEY='7f4b6d8e905ca22ddf3234f6c5551d9a2a712df06f28da7f13a4a92cadf1108c' \
+    TENANT_CONTEXT_HMAC_KEY="$(printf '%s' 'challanse-test-tenant-context' | sha256sum | awk '{print $1}')" \
     AWS_ENDPOINT_URL="http://127.0.0.1:${localstack_port}" AWS_ACCESS_KEY_ID='test' AWS_SECRET_ACCESS_KEY='test' \
     AWS_DEFAULT_REGION='ap-south-1' PYTHONPATH=services/enrichment \
     /tmp/challanse-venv/bin/python -m pytest -q services/enrichment/tests -m integration
