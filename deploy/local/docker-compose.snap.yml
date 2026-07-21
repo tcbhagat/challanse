@@ -1,0 +1,21 @@
+services:
+  postgres:
+    security_opt: !reset []
+  minio:
+    security_opt: !reset []
+  minio-init:
+    security_opt: !reset []
+  migrate:
+    security_opt: !reset []
+  api:
+    security_opt: !reset []
+  worker:
+    security_opt: !reset []
+  edge:
+    security_opt: !reset []
+  reviewer-worker:
+    security_opt: !reset []
+  gateway:
+    security_opt: !reset []
+  cloudflared:
+    security_opt: !reset []

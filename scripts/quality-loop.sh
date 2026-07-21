@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="tcbhagat/challanse"
-QUALITY_ROOT="/srv/challanse/exports/quality"
+QUALITY_ROOT="/mnt/challanse-data/exports/quality"
 STATE_FILE="$QUALITY_ROOT/clean-cycles.json"
 MODEL="${QUALITY_MODEL:-qwen2.5:7b}"
 
@@ -15,7 +15,7 @@ require_freeze() {
   [[ "$(repo_var PILOT_DEPLOY_ENABLED)" == "false" ]] || die "PILOT_DEPLOY_ENABLED must equal false."
 }
 require_quality_storage() {
-  [[ "$(findmnt -n -o SOURCE --target /srv/challanse 2>/dev/null || true)" == "/dev/mapper/challanse-local" ]] \
+  [[ "$(findmnt -n -o SOURCE --mountpoint /mnt/challanse-data 2>/dev/null || true)" == "/dev/mapper/challanse-local" ]] \
     || die "Encrypted pilot storage must be open before running the quality loop."
   mkdir -p "$QUALITY_ROOT"
   chmod 700 "$QUALITY_ROOT"

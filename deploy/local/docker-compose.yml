@@ -44,7 +44,8 @@ x-backend: &backend
   read_only: true
   cap_drop: [ALL]
   security_opt: [no-new-privileges:true]
-  tmpfs: [/tmp:rw,noexec,nosuid,size=128m]
+  tmpfs:
+    - "/tmp:rw,noexec,nosuid,size=128m"
   pids_limit: 256
   mem_limit: 1g
   cpus: 2.0
@@ -69,7 +70,9 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    tmpfs: [/var/run/postgresql:rw,nosuid,size=16m, /tmp:rw,noexec,nosuid,size=32m]
+    tmpfs:
+      - "/var/run/postgresql:rw,nosuid,size=16m"
+      - "/tmp:rw,noexec,nosuid,size=32m"
     pids_limit: 256
     mem_limit: 1g
     cpus: 1.5
@@ -93,7 +96,8 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    tmpfs: [/tmp:rw,noexec,nosuid,size=64m]
+    tmpfs:
+      - "/tmp:rw,noexec,nosuid,size=64m"
     pids_limit: 256
     mem_limit: 1g
     cpus: 1.5
@@ -117,7 +121,9 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    tmpfs: [/tmp:rw,noexec,nosuid,size=32m, /root/.mc:rw,noexec,nosuid,size=16m]
+    tmpfs:
+      - "/tmp:rw,noexec,nosuid,size=32m"
+      - "/root/.mc:rw,noexec,nosuid,size=16m"
     restart: "no"
 
   migrate:
@@ -171,7 +177,9 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    tmpfs: [/tmp:rw,noexec,nosuid,size=128m, /app/apps/edge/.wrangler:rw,noexec,nosuid,size=64m]
+    tmpfs:
+      - "/tmp:rw,noexec,nosuid,size=128m"
+      - "/app/apps/edge/.wrangler:rw,noexec,nosuid,uid=1000,gid=1000,mode=0700,size=64m"
     pids_limit: 256
     mem_limit: 768m
     cpus: 1.0
@@ -190,14 +198,18 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    tmpfs: [/tmp:rw,noexec,nosuid,size=128m, /app/apps/reviewer/.wrangler:rw,noexec,nosuid,size=64m]
+    tmpfs:
+      - "/tmp:rw,noexec,nosuid,size=128m"
+      - "/app/apps/reviewer/.wrangler:rw,noexec,nosuid,uid=1000,gid=1000,mode=0700,size=64m"
     pids_limit: 256
     mem_limit: 512m
     cpus: 0.75
     restart: "no"
 
   gateway:
-    image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    build:
+      context: ../..
+      dockerfile: deploy/local/Dockerfile.caddy
     environment:
       CHALLANSE_LAN_IP: ${CHALLANSE_LAN_IP:?Set CHALLANSE_LAN_IP}
       LOCAL_REVIEWER_GATEWAY_SECRET: ${LOCAL_REVIEWER_GATEWAY_SECRET}
@@ -213,7 +225,10 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    tmpfs: [/data:rw,noexec,nosuid,size=32m, /config:rw,noexec,nosuid,size=16m, /tmp:rw,noexec,nosuid,size=16m]
+    tmpfs:
+      - "/data:rw,noexec,nosuid,uid=1000,gid=1000,mode=0700,size=32m"
+      - "/config:rw,noexec,nosuid,uid=1000,gid=1000,mode=0700,size=16m"
+      - "/tmp:rw,noexec,nosuid,uid=1000,gid=1000,mode=0700,size=16m"
     pids_limit: 128
     mem_limit: 256m
     cpus: 0.5
@@ -230,7 +245,8 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    tmpfs: [/tmp:rw,noexec,nosuid,size=32m]
+    tmpfs:
+      - "/tmp:rw,noexec,nosuid,size=32m"
     pids_limit: 128
     mem_limit: 256m
     cpus: 0.5

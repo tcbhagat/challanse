@@ -141,6 +141,24 @@ if contains_forbidden -RInE 'env\.(DB|RECEIPTS|RECEIPT_QUEUE)' apps/edge/src; th
   exit 1
 fi
 grep -Eq '^FROM .+@sha256:[0-9a-f]{64}$' services/enrichment/Dockerfile
+grep -Eq '^FROM .+@sha256:[0-9a-f]{64}$' deploy/local/Dockerfile.caddy
+grep -Fq 'RUN setcap -r /usr/bin/caddy' deploy/local/Dockerfile.caddy
+grep -Fq 'USER 1000:1000' deploy/local/Dockerfile.caddy
+if grep -Eq '^[[:space:]]*tmpfs:[[:space:]]*\[' deploy/local/docker-compose.yml; then
+  echo "Compose tmpfs mounts must use quoted block-list entries so commas remain mount options." >&2
+  exit 1
+fi
+grep -Fq '/app/apps/edge/.wrangler:rw,noexec,nosuid,uid=1000,gid=1000,mode=0700' deploy/local/docker-compose.yml
+grep -Fq '/app/apps/reviewer/.wrangler:rw,noexec,nosuid,uid=1000,gid=1000,mode=0700' deploy/local/docker-compose.yml
+grep -Fq 'compose up -d --force-recreate' scripts/local-pilot.sh
+test -s deploy/local/docker-compose.snap.yml
+grep -Fq 'SNAP_COMPOSE_FILE=' scripts/local-pilot.sh
+grep -Fq 'name=apparmor' scripts/local-pilot.sh
+grep -Fq 'name=seccomp' scripts/local-pilot.sh
+if grep -Eq 'privileged:[[:space:]]*true|cap_add:' deploy/local/docker-compose.snap.yml; then
+  echo "Snap compatibility must not add privileges or capabilities." >&2
+  exit 1
+fi
 grep -Eq 'deletion_protection[[:space:]]*=[[:space:]]*true' infra/terraform/production/main.tf
 grep -Eq 'deletion_protection[[:space:]]*=[[:space:]]*false' infra/terraform/staging/main.tf
 grep -Fq 'enable_continuous_backup = true' infra/terraform/modules/enrichment/main.tf

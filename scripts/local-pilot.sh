@@ -9,8 +9,11 @@ EDGE_VARS="$CONFIG_ROOT/edge.dev.vars"
 REVIEWER_VARS="$CONFIG_ROOT/reviewer.dev.vars"
 TLS_DIR="$CONFIG_ROOT/tls"
 RESTIC_PASSWORD_FILE="$CONFIG_ROOT/restic-password"
-DATA_ROOT="/srv/challanse"
+DATA_ROOT="/mnt/challanse-data"
+LEGACY_DATA_ROOT="/srv/challanse"
+CONTAINER_DATA_ROOT="/srv/challanse"
 COMPOSE_FILE="$ROOT/deploy/local/docker-compose.yml"
+SNAP_COMPOSE_FILE="$ROOT/deploy/local/docker-compose.snap.yml"
 RUNTIME_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/challanse-local-runtime"
 HOST_DEVICE="/dev/sda2"
 HOST_MOUNT="/mnt/challanse-host"
@@ -51,15 +54,33 @@ load_env() {
 }
 compose() {
   load_env
-  docker compose -f "$COMPOSE_FILE" "$@"
+  local compose_files=(-f "$COMPOSE_FILE") docker_root
+  docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+  if [[ "$docker_root" == /var/snap/docker/* ]]; then
+    docker info --format '{{json .SecurityOptions}}' | grep -q 'name=apparmor' \
+      || die "Snap Docker must retain AppArmor before using its compatibility override."
+    docker info --format '{{json .SecurityOptions}}' | grep -q 'name=seccomp' \
+      || die "Snap Docker must retain the built-in seccomp profile before using its compatibility override."
+    compose_files+=(-f "$SNAP_COMPOSE_FILE")
+  fi
+  docker compose "${compose_files[@]}" "$@"
 }
 require_encrypted_storage() {
   local source type
   [[ -d "$DATA_ROOT" ]] || die "$DATA_ROOT does not exist. Run storage-audit, then storage-prepare only after backup approval."
-  source="$(findmnt -n -o SOURCE --target "$DATA_ROOT" 2>/dev/null || true)"
+  source="$(findmnt -n -o SOURCE --mountpoint "$DATA_ROOT" 2>/dev/null || true)"
   [[ "$source" == "/dev/mapper/$MAPPER_NAME" ]] || die "$DATA_ROOT is not mounted from /dev/mapper/$MAPPER_NAME."
   type="$(lsblk -dn -o TYPE "$source" 2>/dev/null || true)"
   [[ "$type" == "crypt" ]] || die "$DATA_ROOT is not backed by an active LUKS mapping."
+}
+require_docker_storage_visibility() {
+  docker image inspect challanse-local-pilot-api >/dev/null 2>&1 \
+    || die "Local pilot images are missing. Run provision before start."
+  docker run --rm --network none --read-only \
+    --mount "type=bind,src=$DATA_ROOT,dst=/host-data,readonly" \
+    --entrypoint python challanse-local-pilot-api \
+    -c 'from pathlib import Path; raise SystemExit(0 if Path("/host-data").is_dir() else 1)' >/dev/null 2>&1 \
+    || die "Docker cannot access $DATA_ROOT. For Snap Docker, restart its service after opening storage, then retry."
 }
 mount_host_storage() {
   local current_mount expected_uuid mounted_uuid
@@ -166,8 +187,8 @@ storage_audit() {
     printf '%s is not mounted. No filesystem content was opened or changed.\n' "$HOST_DEVICE"
   fi
   printf 'ChallanSe uses a separate %s LUKS2 container file; it never formats %s.\n' "$CONTAINER_SIZE" "$HOST_DEVICE"
-  if findmnt -rn -T "$DATA_ROOT" >/dev/null 2>&1; then
-    findmnt -o SOURCE,TARGET,FSTYPE,OPTIONS --target "$DATA_ROOT"
+  if mountpoint -q "$DATA_ROOT"; then
+    findmnt -o SOURCE,TARGET,FSTYPE,OPTIONS --mountpoint "$DATA_ROOT"
   fi
 }
 storage_prepare() {
@@ -202,8 +223,13 @@ storage_open() {
   if [[ ! -e "/dev/mapper/$MAPPER_NAME" ]]; then
     sudo cryptsetup open "$CONTAINER_FILE" "$MAPPER_NAME"
   fi
+  if mountpoint -q "$LEGACY_DATA_ROOT"; then
+    [[ "$(findmnt -n -o SOURCE --mountpoint "$LEGACY_DATA_ROOT" 2>/dev/null || true)" == "/dev/mapper/$MAPPER_NAME" ]] \
+      || die "$LEGACY_DATA_ROOT is mounted from an unexpected source; it was not changed."
+    sudo umount "$LEGACY_DATA_ROOT"
+  fi
   sudo mkdir -p "$DATA_ROOT"
-  if ! findmnt -rn --target "$DATA_ROOT" >/dev/null 2>&1; then
+  if ! mountpoint -q "$DATA_ROOT"; then
     sudo mount "/dev/mapper/$MAPPER_NAME" "$DATA_ROOT"
   fi
   sudo chown "$USER":"$(id -gn)" "$DATA_ROOT"
@@ -213,8 +239,11 @@ storage_open() {
 storage_close() {
   require_aws_freeze
   need cryptsetup; need findmnt
-  if findmnt -rn --target "$DATA_ROOT" >/dev/null 2>&1; then
+  if mountpoint -q "$DATA_ROOT"; then
     sudo umount "$DATA_ROOT"
+  fi
+  if mountpoint -q "$LEGACY_DATA_ROOT"; then
+    sudo umount "$LEGACY_DATA_ROOT"
   fi
   if [[ -e "/dev/mapper/$MAPPER_NAME" ]]; then
     sudo cryptsetup close "$MAPPER_NAME"
@@ -268,7 +297,7 @@ OLLAMA_URL=http://host.docker.internal:11434
 OLLAMA_MODEL=qwen2.5:7b
 OLLAMA_TIMEOUT_SECONDS=90
 TESSERACT_LANGUAGES=eng+hin
-LOCAL_DATA_ROOT=$DATA_ROOT
+LOCAL_DATA_ROOT=$CONTAINER_DATA_ROOT
 LOCAL_STORAGE_LIMIT_BYTES=20000000000
 LOCAL_AUTH_ENCRYPTION_KEY=$auth_key
 LOCAL_SESSION_TTL_MINUTES=480
@@ -390,11 +419,8 @@ backup_verify() {
   rm -rf -- "$restore_root"
   printf 'Restore verification passed. Evidence: %s\n' "$evidence"
 }
-generate_ca() {
+generate_server_certificate() {
   local lan_ip="$1"
-  openssl genrsa -out "$TLS_DIR/pilot-ca.key" 4096 >/dev/null 2>&1
-  openssl req -x509 -new -key "$TLS_DIR/pilot-ca.key" -sha256 -days 365 \
-    -subj '/CN=ChallanSe Synthetic Pilot CA' -out "$TLS_DIR/pilot-ca.crt"
   openssl genrsa -out "$TLS_DIR/pilot.key" 3072 >/dev/null 2>&1
   openssl req -new -key "$TLS_DIR/pilot.key" -subj '/CN=ChallanSe Local Pilot' -out "$TLS_DIR/pilot.csr"
   cat >"$TLS_DIR/pilot.ext" <<EOF
@@ -407,6 +433,39 @@ EOF
   rm -f "$TLS_DIR/pilot.csr" "$TLS_DIR/pilot-ca.srl" "$TLS_DIR/pilot.ext"
   chmod 600 "$TLS_DIR"/*.key
   chmod 644 "$TLS_DIR"/*.crt
+}
+generate_ca() {
+  local lan_ip="$1"
+  openssl genrsa -out "$TLS_DIR/pilot-ca.key" 4096 >/dev/null 2>&1
+  openssl req -x509 -new -key "$TLS_DIR/pilot-ca.key" -sha256 -days 365 \
+    -subj '/CN=ChallanSe Synthetic Pilot CA' -out "$TLS_DIR/pilot-ca.crt"
+  generate_server_certificate "$lan_ip"
+}
+refresh_lan_configuration() {
+  require_aws_freeze
+  require_encrypted_storage
+  need openssl; need sed; need ip; need docker
+  [[ -f "$ENV_FILE" && -f "$EDGE_VARS" && -f "$TLS_DIR/pilot-ca.key" && -f "$TLS_DIR/pilot-ca.crt" ]] \
+    || die "Existing local pilot configuration and CA are required before refreshing the LAN address."
+  if docker ps --filter label=com.docker.compose.project=challanse-local-pilot --format '{{.ID}}' | grep -q .; then
+    die "Stop the local pilot containers before refreshing the LAN address."
+  fi
+  local lan_ip
+  lan_ip="$(local_ip)"
+  [[ -n "$lan_ip" ]] || die "A current LAN IPv4 address could not be detected."
+  confirm_phrase "Preserve all secrets and the pilot CA, then reissue the server certificate for $lan_ip. " "REFRESH-LOCAL-PILOT-LAN"
+  sed -i \
+    -e "s|^CHALLANSE_LAN_IP=.*|CHALLANSE_LAN_IP=$lan_ip|" \
+    -e "s|^PUBLIC_API_URL=.*|PUBLIC_API_URL=https://$lan_ip:8443|" \
+    -e "s|^REVIEW_DASHBOARD_URL=.*|REVIEW_DASHBOARD_URL=https://$lan_ip:8444|" \
+    -e '/^LOCAL_REVIEWER_.*PASSWORD.*=/d' \
+    "$ENV_FILE"
+  sed -i "s|^ALLOWED_ORIGINS=.*|ALLOWED_ORIGINS=https://$lan_ip:8444|" "$EDGE_VARS"
+  chmod 600 "$ENV_FILE" "$EDGE_VARS"
+  generate_server_certificate "$lan_ip"
+  cp "$TLS_DIR/pilot-ca.crt" "$ROOT/apps/mobile/android/app/src/localPilot/res/raw/challanse_pilot_ca.crt"
+  validate_existing_provision_state "$lan_ip"
+  printf 'Local pilot LAN configuration now matches %s. Existing credentials and the pilot CA were preserved.\n' "$lan_ip"
 }
 validate_existing_provision_state() {
   local lan_ip="$1" required_file private_file
@@ -469,6 +528,7 @@ provision() {
   printf 'Provisioning complete. Secrets are stored with mode 600 under %s.\n' "$CONFIG_ROOT"
 }
 reviewer_enroll() {
+  require_encrypted_storage
   load_env
   local email password password_confirm payload
   read -r -p 'Reviewer email: ' email
@@ -539,6 +599,7 @@ start_stack() {
   require_aws_freeze
   require_encrypted_storage
   require_firewall
+  require_docker_storage_visibility
   local mode="${1:---lan}"
   load_env
   [[ "$(local_ip)" == "$CHALLANSE_LAN_IP" ]] || die "LAN IP changed. Reissue the pilot certificate before startup."
@@ -562,9 +623,9 @@ start_stack() {
     fi
     sed -i "s|^ACCESS_TEAM_DOMAIN=.*|ACCESS_TEAM_DOMAIN=$ACCESS_TEAM_DOMAIN|; s|^ACCESS_AUD=.*|ACCESS_AUD=$PILOT_ACCESS_AUD|" "$EDGE_VARS"
     chmod 600 "$ENV_FILE" "$EDGE_VARS"
-    compose --profile remote up -d
+    compose --profile remote up -d --force-recreate
   elif [[ "$mode" == "--lan" ]]; then
-    compose up -d
+    compose up -d --force-recreate
   else
     die "Use start --lan or start --both."
   fi
@@ -585,6 +646,7 @@ seed() {
   printf 'Synthetic site, four vendors, two reviewers, and Tally data are seeded.\n'
 }
 enroll() {
+  require_encrypted_storage
   load_env
   local output code api_base link device_name
   read -r -p 'Device name [Synthetic Pilot Device]: ' device_name
@@ -598,6 +660,7 @@ enroll() {
 }
 status_cmd() {
   require_aws_freeze
+  require_encrypted_storage
   load_env
   local failed=0 status_json pilot_mode
   compose ps
@@ -623,6 +686,7 @@ status_cmd() {
 }
 config_check() {
   require_aws_freeze
+  require_encrypted_storage
   load_env
   compose config --quiet
   printf 'Local Compose configuration is valid with frozen AWS controls.\n'
@@ -635,6 +699,7 @@ download_apk() {
   sha256sum "$ROOT/artifacts/local-pilot/ChallanSe-Local-Pilot.apk"
 }
 acceptance() {
+  require_encrypted_storage
   load_env
   local output code report
   output="$(compose exec -T -e LOCAL_DEVICE_NAME='Acceptance Device' api python -m app.local_enroll)"
@@ -650,6 +715,7 @@ acceptance() {
   printf 'Acceptance report: %s\n' "$report"
 }
 evidence() {
+  require_encrypted_storage
   load_env
   local timestamp directory apk status_json pilot_mode backup_status
   timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -682,11 +748,13 @@ stop_stack() {
   printf 'Local services stopped. Mobile queues and synthetic data were preserved.\n'
 }
 reset_stack() {
+  require_encrypted_storage
   confirm_phrase "Delete and recreate all server-side synthetic records? " "RESET-SYNTHETIC-DATA"
   compose exec -T api python -c 'from app.config import get_settings; from app.local_admin import reset_synthetic_data; reset_synthetic_data(get_settings(), "RESET SYNTHETIC DATA")'
   seed
 }
 destroy_stack() {
+  require_encrypted_storage
   confirm_phrase "Delete local containers, secrets, and all synthetic server data? " "DESTROY-LOCAL-PILOT"
   if [[ -f "$ENV_FILE" ]]; then compose --profile remote down --remove-orphans; fi
   sudo rm -rf "$DATA_ROOT/postgres" "$DATA_ROOT/images" "$DATA_ROOT/exports" "$DATA_ROOT/backups" "$DATA_ROOT/fixtures"
@@ -704,6 +772,7 @@ Commands:
   storage-prepare    Create a separate 20 GB encrypted container without erasing files
   storage-open       Open the encrypted container after reboot
   storage-close      Close the encrypted container after stopping services
+  refresh-lan        Preserve secrets and CA while updating the local IP certificate
   firewall-prepare   Restrict pilot ports to the detected local subnet
   provision          Create local secrets, CA, fixtures, and containers
   start --lan        Start LAN-only supervised pilot
@@ -735,6 +804,7 @@ case "${1:-}" in
   storage-prepare) storage_prepare ;;
   storage-open) storage_open ;;
   storage-close) storage_close ;;
+  refresh-lan) refresh_lan_configuration ;;
   firewall-prepare) firewall_prepare ;;
   provision) provision ;;
   start) start_stack "${2:---lan}" ;;

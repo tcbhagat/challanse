@@ -2,6 +2,8 @@
 
 This environment defaults to supervised demonstrations with synthetic data. A guarded `controlled-client-pilot` mode exists, but remains unavailable until individual reviewer MFA, a recent encrypted backup, a tested restore, an independent security report, and signed client approval are recorded. AWS deployment remains frozen. Images, OCR text, PostgreSQL data, and exports stay in the encrypted pilot container. Cloudflare Tunnel, when explicitly started, transports encrypted traffic but does not store receipt payloads.
 
+On Snap-packaged Docker, the CLI automatically applies `deploy/local/docker-compose.snap.yml`. Snap's runtime rejects all container execution when `no-new-privileges` is requested, so the override removes only that incompatible option after verifying Docker still reports AppArmor and built-in seccomp. Read-only roots, dropped capabilities, non-root users, resource limits, pinned images, and isolated networks remain enforced.
+
 ## Safety Boundary
 
 - Never use real challans, vendors, people, GST numbers, bank details, or Tally exports while the status reports `synthetic-demo`.
@@ -88,7 +90,7 @@ Do not activate this mode without a qualified independent security review and si
 ./scripts/local-pilot.sh activate-client-pilot \
   /secure/signed-client-approval.pdf \
   /secure/independent-security-review.pdf \
-  /srv/challanse/exports/backup-restore-SNAPSHOT.json
+  /mnt/challanse-data/exports/backup-restore-SNAPSHOT.json
 ```
 
 The command hashes the three evidence files and activates the database-controlled mode only when all gates pass. Editing an environment file cannot activate real-data mode. To end capture and later remove client data after the agreed retention period:
@@ -125,7 +127,7 @@ The CLI requests the tunnel token, Access team domain, and Access audience witho
 
 The acceptance command uploads 50 generated WebP receipts through resumable upload contracts, verifies durable acknowledgements, and waits up to 30 minutes for the sequential OCR queue to drain. It does not replace the required Android 8 / 2 GB device write test.
 
-Evidence is written under `/srv/challanse/exports`. It includes the commit, container identities, model list, OCR versions, APK checksum, standards mapping, test status, and explicit limitations. It does not contain passwords, device tokens, CA private keys, or tunnel credentials. `quality-loop.sh improve` may create an isolated branch and pull request, but it cannot merge, release, activate client mode, rotate credentials, delete data, or change network routes.
+Evidence is written under `/mnt/challanse-data/exports`. The encrypted host mount is exposed inside backend containers as `/srv/challanse`. Evidence includes the commit, container identities, model list, OCR versions, APK checksum, standards mapping, test status, and explicit limitations. It does not contain passwords, device tokens, CA private keys, or tunnel credentials. `quality-loop.sh improve` may create an isolated branch and pull request, but it cannot merge, release, activate client mode, rotate credentials, delete data, or change network routes.
 
 ## Stop or Reset
 
