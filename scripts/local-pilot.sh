@@ -724,23 +724,36 @@ download_apk() {
 acceptance() {
   require_encrypted_storage
   load_env
-  local output code report
-  output="$(compose exec -T -e LOCAL_DEVICE_NAME='Acceptance Device' api python -m app.local_enroll)"
+  local output code report run_status cleanup_status
+  output="$(compose exec -T api python -m app.local_acceptance prepare)"
   code="$(sed -n 's/^enrollment_code=\([^ ]*\).*/\1/p' <<<"$output")"
   [[ -n "$code" ]] || die "Acceptance enrollment code could not be generated."
   report="$DATA_ROOT/exports/local-acceptance-$(date -u +%Y%m%dT%H%M%SZ).json"
+  set +e
   LOCAL_API_BASE_URL="https://$CHALLANSE_LAN_IP:8443" \
   LOCAL_ENROLLMENT_CODE="$code" \
   LOCAL_FIXTURE_DIR="$DATA_ROOT/fixtures" \
   LOCAL_CA_FILE="$TLS_DIR/pilot-ca.crt" \
   LOCAL_ACCEPTANCE_OUTPUT="$report" \
     python3 "$ROOT/scripts/run-local-acceptance.py"
+  run_status=$?
+  compose exec -T api python -m app.local_acceptance cleanup
+  cleanup_status=$?
+  set -e
+  [[ "$cleanup_status" -eq 0 ]] || die "Acceptance tenant cleanup failed. Do not use this run as evidence."
+  [[ "$run_status" -eq 0 ]] || die "Synthetic acceptance failed. The temporary acceptance tenant was removed."
   printf 'Acceptance report: %s\n' "$report"
 }
 evidence() {
   require_encrypted_storage
   load_env
-  local timestamp directory apk status_json pilot_mode backup_status
+  local timestamp directory apk status_json pilot_mode backup_status acceptance_report
+  compose exec -T api python -m app.local_acceptance verify-clean >/dev/null \
+    || die "Temporary acceptance data remains. Run acceptance cleanup before creating evidence."
+  acceptance_report="$(find "$DATA_ROOT/exports" -maxdepth 1 -type f -name 'local-acceptance-*.json' -mmin -1440 -printf '%T@ %p\n' | sort -nr | head -n 1 | cut -d' ' -f2-)"
+  [[ -n "$acceptance_report" ]] || die "No successful acceptance report from the last 24 hours exists. Run acceptance first."
+  jq -e '.synthetic == true and .receiptCount == 50 and .uniqueReceiptCount == 50 and .passed == true' "$acceptance_report" >/dev/null \
+    || die "The latest acceptance report did not pass. Evidence was not created."
   timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
   directory="$DATA_ROOT/exports/evidence-$timestamp"
   mkdir -p "$directory"
@@ -752,6 +765,7 @@ evidence() {
   status_json="$(compose exec -T api python -c 'import json; from app.config import get_settings; from app.local_admin import local_status; print(json.dumps(local_status(get_settings())))')"
   jq . <<<"$status_json" >"$directory/runtime-status.json"
   cp "$ROOT/quality/gates.json" "$directory/standards-gates.json"
+  cp "$acceptance_report" "$directory/acceptance-report.json"
   pilot_mode="$(jq -r '.pilotMode' <<<"$status_json")"
   backup_status="$(jq -r '.backup.status' <<<"$status_json")"
   apk="$ROOT/apps/mobile/android/app/build/outputs/apk/localPilot/app-localPilot.apk"

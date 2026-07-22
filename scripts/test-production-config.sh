@@ -249,3 +249,11 @@ grep -Fq 'OLLAMA_URL=http://ollama:11434' scripts/local-pilot.sh \
   || fail "local pilot must use the private Ollama network alias"
 grep -Fq 'docker network connect --alias ollama' scripts/local-pilot.sh \
   || fail "local pilot must attach Ollama to the private OCR network"
+grep -Fq 'python -m app.local_acceptance prepare' scripts/local-pilot.sh \
+  || fail "local acceptance must use an isolated temporary tenant"
+grep -Fq 'python -m app.local_acceptance cleanup' scripts/local-pilot.sh \
+  || fail "local acceptance must clean its temporary tenant"
+grep -Fq 'No successful acceptance report from the last 24 hours exists' scripts/local-pilot.sh \
+  || fail "evidence generation must require recent successful acceptance"
+grep -Fq 'python -m app.local_acceptance verify-clean' scripts/local-pilot.sh \
+  || fail "evidence generation must verify acceptance cleanup"

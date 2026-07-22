@@ -4,6 +4,7 @@ import pytest
 
 from app.config import Settings
 from app.local_health import probe_ollama
+from app.local_acceptance import ACCEPTANCE_ORGANIZATION_ID, ACCEPTANCE_SITE_ID
 from app.local_ocr import normalize_text, run_local_ocr, validate_normalized
 from app.local_storage import local_uploads_paused
 from app.object_store import object_encryption_headers
@@ -34,6 +35,11 @@ def test_ollama_health_requires_the_configured_model() -> None:
     settings = Settings(OLLAMA_MODEL="qwen2.5:7b")
     assert probe_ollama(settings, OllamaTagsClient(["qwen2.5:7b"])) is True
     assert probe_ollama(settings, OllamaTagsClient(["llama3.2:3b"])) is False
+
+
+def test_acceptance_uses_an_isolated_tenant() -> None:
+    assert str(ACCEPTANCE_ORGANIZATION_ID).endswith("0002")
+    assert str(ACCEPTANCE_SITE_ID).endswith("0002")
 
 
 def test_local_object_store_omits_cloud_kms_headers() -> None:
