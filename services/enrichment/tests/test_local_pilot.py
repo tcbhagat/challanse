@@ -3,11 +3,37 @@ from collections import namedtuple
 import pytest
 
 from app.config import Settings
+from app.local_health import probe_ollama
 from app.local_ocr import normalize_text, run_local_ocr, validate_normalized
 from app.local_storage import local_uploads_paused
 from app.object_store import object_encryption_headers
 from app.providers import run_ocr
 from app.local_auth import login_page, parse_login_form
+
+
+class OllamaTagsResponse:
+    def __init__(self, model_names: list[str]) -> None:
+        self.model_names = model_names
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, list[dict[str, str]]]:
+        return {"models": [{"name": name} for name in self.model_names]}
+
+
+class OllamaTagsClient:
+    def __init__(self, model_names: list[str]) -> None:
+        self.model_names = model_names
+
+    def get(self, _url: str, **_kwargs) -> OllamaTagsResponse:
+        return OllamaTagsResponse(self.model_names)
+
+
+def test_ollama_health_requires_the_configured_model() -> None:
+    settings = Settings(OLLAMA_MODEL="qwen2.5:7b")
+    assert probe_ollama(settings, OllamaTagsClient(["qwen2.5:7b"])) is True
+    assert probe_ollama(settings, OllamaTagsClient(["llama3.2:3b"])) is False
 
 
 def test_local_object_store_omits_cloud_kms_headers() -> None:

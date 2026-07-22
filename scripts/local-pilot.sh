@@ -293,7 +293,7 @@ GST_PROVIDER=disabled
 NOTIFICATION_PROVIDER=disabled
 CREDIT_PROVIDER=disabled
 SLACK_PROVIDER=disabled
-OLLAMA_URL=http://host.docker.internal:11434
+OLLAMA_URL=http://ollama:11434
 OLLAMA_MODEL=qwen2.5:7b
 OLLAMA_TIMEOUT_SECONDS=90
 TESSERACT_LANGUAGES=eng+hin
@@ -330,6 +330,27 @@ ensure_local_auth_key() {
     printf 'LOCAL_AUTH_ENCRYPTION_KEY=%s\n' "$(openssl rand -hex 32)" >>"$ENV_FILE"
     printf 'LOCAL_SESSION_TTL_MINUTES=480\n' >>"$ENV_FILE"
     chmod 600 "$ENV_FILE"
+  fi
+}
+ensure_private_ollama_url() {
+  [[ -f "$ENV_FILE" ]] || return
+  local configured_url
+  configured_url="$(sed -n 's/^OLLAMA_URL=//p' "$ENV_FILE")"
+  if [[ "$configured_url" == "http://host.docker.internal:11434" ]]; then
+    sed -i 's|^OLLAMA_URL=.*|OLLAMA_URL=http://ollama:11434|' "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+  elif [[ "$configured_url" != "http://ollama:11434" ]]; then
+    die "Unexpected Ollama endpoint in the frozen local configuration. It was not changed."
+  fi
+}
+connect_private_ollama() {
+  local network_name="challanse-local-pilot_ocr-egress"
+  docker inspect -f '{{.State.Running}}' ollama 2>/dev/null | grep -qx true \
+    || die "The existing Ollama container is not running. Start it before ChallanSe."
+  docker network inspect "$network_name" >/dev/null 2>&1 \
+    || die "The private OCR network was not created."
+  if ! docker inspect ollama --format '{{json .NetworkSettings.Networks}}' | jq -e --arg network "$network_name" 'has($network)' >/dev/null; then
+    docker network connect --alias ollama "$network_name" ollama
   fi
 }
 require_external_backup_mount() {
@@ -601,6 +622,7 @@ start_stack() {
   require_firewall
   require_docker_storage_visibility
   local mode="${1:---lan}"
+  ensure_private_ollama_url
   load_env
   [[ "$(local_ip)" == "$CHALLANSE_LAN_IP" ]] || die "LAN IP changed. Reissue the pilot certificate before startup."
   if [[ "$mode" == "--both" ]]; then
@@ -629,6 +651,7 @@ start_stack() {
   else
     die "Use start --lan or start --both."
   fi
+  connect_private_ollama
   prewarm
   for _ in $(seq 1 60); do
     if curl -fsS --cacert "$TLS_DIR/pilot-ca.crt" "https://$CHALLANSE_LAN_IP:8443/health" >/dev/null 2>&1; then
@@ -756,7 +779,10 @@ reset_stack() {
 destroy_stack() {
   require_encrypted_storage
   confirm_phrase "Delete local containers, secrets, and all synthetic server data? " "DESTROY-LOCAL-PILOT"
-  if [[ -f "$ENV_FILE" ]]; then compose --profile remote down --remove-orphans; fi
+  if [[ -f "$ENV_FILE" ]]; then
+    docker network disconnect challanse-local-pilot_ocr-egress ollama 2>/dev/null || true
+    compose --profile remote down --remove-orphans
+  fi
   sudo rm -rf "$DATA_ROOT/postgres" "$DATA_ROOT/images" "$DATA_ROOT/exports" "$DATA_ROOT/backups" "$DATA_ROOT/fixtures"
   rm -rf "$CONFIG_ROOT"
   rm -rf "$RUNTIME_ROOT"

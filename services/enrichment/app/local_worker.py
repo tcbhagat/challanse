@@ -4,6 +4,7 @@ import threading
 import time
 
 from .config import get_settings
+from .local_health import record_ollama_health
 from .observability import configure_observability
 from .outbox import dispatch_outbox_once
 from .queueing import claim_local_message, complete_local_message, fail_local_message
@@ -28,7 +29,15 @@ def run_worker() -> None:
         raise RuntimeError("database_url_unconfigured")
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
+    next_health_check = 0.0
     while not stopping.is_set():
+        now = time.monotonic()
+        if now >= next_health_check:
+            try:
+                record_ollama_health(settings)
+            except Exception as error:
+                logger.warning("local_ollama_health_record_failed", extra={"error_code": type(error).__name__})
+            next_health_check = now + 15.0
         dispatch_outbox_once(settings)
         message = claim_local_message(database_url)
         if message is None:

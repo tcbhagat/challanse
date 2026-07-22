@@ -244,3 +244,8 @@ identity_link_seed_sql="$(sed -n '/INSERT INTO identity_links/,/"""/p' services/
 if printf '%s\n' "$identity_link_seed_sql" | grep -q 'updated_at'; then
   fail "local seed must not write identity_links.updated_at"
 fi
+
+grep -Fq 'OLLAMA_URL=http://ollama:11434' scripts/local-pilot.sh \
+  || fail "local pilot must use the private Ollama network alias"
+grep -Fq 'docker network connect --alias ollama' scripts/local-pilot.sh \
+  || fail "local pilot must attach Ollama to the private OCR network"

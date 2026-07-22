@@ -2,7 +2,6 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-import httpx
 from psycopg.rows import dict_row
 
 from .config import Settings
@@ -30,14 +29,20 @@ def local_status(settings: Settings) -> dict[str, Any]:
             FROM local_receipt_queue
             """
         ).fetchone()
+        ollama_health = connection.execute(
+            """
+            SELECT status, model_name, checked_at > NOW() - INTERVAL '45 seconds' AS fresh
+            FROM local_service_health
+            WHERE service_name = 'ollama'
+            """
+        ).fetchone()
         connection.execute("SELECT 1")
-    try:
-        response = httpx.get(f"{settings.ollama_url.rstrip('/')}/api/tags", timeout=3.0)
-        response.raise_for_status()
-        model_names = {str(model.get("name", "")) for model in response.json().get("models", [])}
-        ollama_ready = settings.ollama_model in model_names
-    except Exception:
-        ollama_ready = False
+    ollama_ready = bool(
+        ollama_health
+        and ollama_health["status"] == "READY"
+        and ollama_health["model_name"] == settings.ollama_model
+        and ollama_health["fresh"]
+    )
     try:
         version = tesseract_version()
         languages = tesseract_languages()
