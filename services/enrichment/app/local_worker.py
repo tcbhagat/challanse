@@ -5,6 +5,7 @@ import time
 
 from .config import get_settings
 from .local_health import record_ollama_health
+from .local_test_runs import claim_test_run, prune_test_runs, recover_interrupted_test_runs, run_claimed_test
 from .observability import configure_observability
 from .outbox import dispatch_outbox_once
 from .queueing import claim_local_message, complete_local_message, fail_local_message
@@ -29,15 +30,30 @@ def run_worker() -> None:
         raise RuntimeError("database_url_unconfigured")
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
+    recovered = recover_interrupted_test_runs(settings)
+    if recovered:
+        logger.warning("local_test_runs_recovered", extra={"count": recovered})
     next_health_check = 0.0
+    test_thread: threading.Thread | None = None
     while not stopping.is_set():
         now = time.monotonic()
         if now >= next_health_check:
             try:
                 record_ollama_health(settings)
+                prune_test_runs(settings)
             except Exception as error:
                 logger.warning("local_ollama_health_record_failed", extra={"error_code": type(error).__name__})
             next_health_check = now + 15.0
+        if test_thread is None or not test_thread.is_alive():
+            test_run_id = claim_test_run(settings)
+            if test_run_id:
+                test_thread = threading.Thread(
+                    target=run_claimed_test,
+                    args=(settings, test_run_id),
+                    name=f"local-test-{test_run_id}",
+                    daemon=True,
+                )
+                test_thread.start()
         dispatch_outbox_once(settings)
         message = claim_local_message(database_url)
         if message is None:

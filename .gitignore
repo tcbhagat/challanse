@@ -16,6 +16,8 @@ apps/mobile/package-lock.json
 apps/edge/wrangler.generated.toml
 *.log
 artifacts/local-pilot/
+artifacts/playwright/
+artifacts/playwright-report/
 .local-runtime/
 __pycache__/
 *.py[cod]

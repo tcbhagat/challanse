@@ -1,12 +1,13 @@
 import logging
 import json as json_module
+from pathlib import Path
 from urllib.parse import quote
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from .config import get_settings
 from .ingress import IngressConflict, IngressStore, get_ingress_store
@@ -67,6 +68,17 @@ from .schemas import (
 from .tenancy import system_connection
 from .integrity import assess_play_integrity
 from .local_admin import local_status, prewarm_local_model, reset_synthetic_data
+from .local_diagnostics import LocalDiagnosticError, explain_safe_code
+from .local_fixtures import generate_local_fixtures
+from .local_test_runs import (
+    LocalTestRunError,
+    artifact_path,
+    create_test_run,
+    get_test_run,
+    list_artifacts,
+    list_test_runs,
+    request_test_run_cancellation,
+)
 from .local_auth import (
     CSRF_COOKIE,
     SESSION_COOKIE,
@@ -85,6 +97,10 @@ configure_observability(get_settings())
 app = FastAPI(title="ChallanSe Enrichment", version="1.0.0")
 FastAPIInstrumentor.instrument_app(app, excluded_urls="health,ready")
 MAX_INTERNAL_REQUEST_BYTES = 1_100_000
+
+
+class LocalDiagnosticRequest(BaseModel):
+    code: str = Field(min_length=3, max_length=80, pattern=r"^[a-z0-9_]+$")
 
 
 def _signed_request_target(request: Request) -> str:
@@ -158,6 +174,22 @@ def _require_reviewer_scope(reviewer, organization_id: str, site_id: str) -> Non
         raise HTTPException(status_code=403, detail="TENANT_SCOPE_FORBIDDEN")
 
 
+def _require_local_operator(reviewer, settings) -> None:
+    if settings.environment != "local-pilot" or not settings.synthetic_mode:
+        raise HTTPException(status_code=404, detail="NOT_FOUND")
+    if reviewer.role != "ORG_ADMIN":
+        raise HTTPException(status_code=403, detail="OPERATOR_ADMIN_REQUIRED")
+
+
+def _local_test_failure(error: LocalTestRunError | LocalDiagnosticError) -> HTTPException:
+    code = str(error)
+    if code.endswith("_not_found"):
+        return HTTPException(status_code=404, detail=code)
+    if code in {"local_test_run_already_active", "local_test_run_not_cancellable"}:
+        return HTTPException(status_code=409, detail=code)
+    return HTTPException(status_code=422, detail=code)
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -184,6 +216,14 @@ async def authoritative_local_status(request: Request, settings=Depends(get_sett
         return local_status(settings)
     except RuntimeError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
+
+
+@app.get("/v1/admin/local/status")
+async def authoritative_operator_status(request: Request, settings=Depends(get_settings)) -> dict[str, object]:
+    await _verify_internal_request(request, settings)
+    reviewer = _reviewer_from_headers(request, settings)
+    _require_local_operator(reviewer, settings)
+    return local_status(settings)
 
 
 @app.get("/v1/local/auth", status_code=status.HTTP_204_NO_CONTENT)
@@ -260,7 +300,8 @@ def local_logout(request: Request, settings=Depends(get_settings)) -> Response:
 @app.post("/v1/admin/local/prewarm")
 async def authoritative_local_prewarm(request: Request, settings=Depends(get_settings)) -> dict[str, str]:
     await _verify_internal_request(request, settings)
-    _reviewer_from_headers(request, settings)
+    reviewer = _reviewer_from_headers(request, settings)
+    _require_local_operator(reviewer, settings)
     try:
         return {"status": "ready", "model": prewarm_local_model(settings)}
     except RuntimeError as error:
@@ -270,13 +311,109 @@ async def authoritative_local_prewarm(request: Request, settings=Depends(get_set
 @app.post("/v1/admin/local/reset")
 async def authoritative_local_reset(request: Request, settings=Depends(get_settings)) -> dict[str, str]:
     raw = await _verify_internal_request(request, settings)
-    _reviewer_from_headers(request, settings)
+    reviewer = _reviewer_from_headers(request, settings)
+    _require_local_operator(reviewer, settings)
     try:
         confirmation = str(json_module.loads(raw).get("confirmation", ""))
         reset_synthetic_data(settings, confirmation)
         return {"status": "reset"}
     except (ValueError, TypeError, AttributeError, RuntimeError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.post("/v1/admin/local/test-runs", status_code=status.HTTP_202_ACCEPTED)
+async def authoritative_create_local_test_run(request: Request, settings=Depends(get_settings)) -> dict[str, object]:
+    await _verify_internal_request(request, settings)
+    reviewer = _reviewer_from_headers(request, settings)
+    _require_local_operator(reviewer, settings)
+    try:
+        return create_test_run(settings, reviewer.user_id)
+    except LocalTestRunError as error:
+        raise _local_test_failure(error) from error
+
+
+@app.get("/v1/admin/local/test-runs")
+async def authoritative_list_local_test_runs(
+    request: Request,
+    limit: int = Query(default=20, ge=1, le=50),
+    settings=Depends(get_settings),
+) -> dict[str, object]:
+    await _verify_internal_request(request, settings)
+    reviewer = _reviewer_from_headers(request, settings)
+    _require_local_operator(reviewer, settings)
+    return {"runs": list_test_runs(settings, limit)}
+
+
+@app.get("/v1/admin/local/test-runs/{run_id}")
+async def authoritative_get_local_test_run(
+    run_id: UUID,
+    request: Request,
+    settings=Depends(get_settings),
+) -> dict[str, object]:
+    await _verify_internal_request(request, settings)
+    reviewer = _reviewer_from_headers(request, settings)
+    _require_local_operator(reviewer, settings)
+    try:
+        return get_test_run(settings, run_id)
+    except LocalTestRunError as error:
+        raise _local_test_failure(error) from error
+
+
+@app.post("/v1/admin/local/test-runs/{run_id}/cancel")
+async def authoritative_cancel_local_test_run(
+    run_id: UUID,
+    request: Request,
+    settings=Depends(get_settings),
+) -> dict[str, object]:
+    await _verify_internal_request(request, settings)
+    reviewer = _reviewer_from_headers(request, settings)
+    _require_local_operator(reviewer, settings)
+    try:
+        return request_test_run_cancellation(settings, run_id, reviewer.user_id)
+    except LocalTestRunError as error:
+        raise _local_test_failure(error) from error
+
+
+@app.get("/v1/admin/local/test-runs/{run_id}/artifacts")
+async def authoritative_local_test_artifacts(
+    run_id: UUID,
+    request: Request,
+    name: str = Query(default="", max_length=80),
+    settings=Depends(get_settings),
+):
+    await _verify_internal_request(request, settings)
+    reviewer = _reviewer_from_headers(request, settings)
+    _require_local_operator(reviewer, settings)
+    try:
+        if name:
+            path = artifact_path(settings, run_id, name)
+            return FileResponse(path, filename=path.name, media_type="application/octet-stream")
+        return {"artifacts": list_artifacts(settings, run_id)}
+    except LocalTestRunError as error:
+        raise _local_test_failure(error) from error
+
+
+@app.post("/v1/admin/local/test-data/refresh")
+async def authoritative_refresh_local_test_data(request: Request, settings=Depends(get_settings)) -> dict[str, object]:
+    await _verify_internal_request(request, settings)
+    reviewer = _reviewer_from_headers(request, settings)
+    _require_local_operator(reviewer, settings)
+    manifest = generate_local_fixtures(Path(settings.local_data_root) / "fixtures")
+    return {"status": "ready", "fixtureCount": len(manifest)}
+
+
+@app.post("/v1/admin/local/explain")
+async def authoritative_explain_local_status(request: Request, settings=Depends(get_settings)) -> dict[str, object]:
+    raw = await _verify_internal_request(request, settings)
+    reviewer = _reviewer_from_headers(request, settings)
+    _require_local_operator(reviewer, settings)
+    try:
+        payload = LocalDiagnosticRequest.model_validate_json(raw)
+        return explain_safe_code(settings, payload.code)
+    except (ValidationError, LocalDiagnosticError) as error:
+        if isinstance(error, LocalDiagnosticError):
+            raise _local_test_failure(error) from error
+        raise HTTPException(status_code=422, detail="local_diagnostic_request_invalid") from error
 
 
 @app.post("/v1/pilot-requests", status_code=status.HTTP_201_CREATED)

@@ -8,8 +8,8 @@ Use this runbook only with synthetic data. Do not activate controlled-client mod
 - Encrypted data mount: `/mnt/challanse-data`
 - API: `https://192.168.1.7:8443`
 - Reviewer: `https://192.168.1.7:8444`
-- Local-pilot APK SHA-256 at commit `6cbd3f0`:
-  `80b155d66e73c530b7f2e2d7bd324e1275fba71afe85d81ad87b6c53dafb0daf`
+- The APK checksum changes whenever the app is rebuilt. Use the latest encrypted
+  runtime manifest and require `sourceTreeClean` to be `true` for release evidence.
 
 If the LAN address changes, stop the stack and run `./scripts/local-pilot.sh refresh-lan` before continuing.
 
@@ -75,7 +75,19 @@ Expected files:
 05-rotated.webp
 manifest.json
 synthetic-tally.csv
+synthetic-tally-duplicate.csv
+synthetic-tally-malformed.csv
+synthetic-tally-unit-mismatch.csv
+synthetic-tally-over-po.csv
 ```
+
+The administrator console is available at:
+
+```text
+https://192.168.1.7:8444/operator
+```
+
+Use **Run complete synthetic test** for the persisted, isolated 50-receipt run. Browser refresh preserves progress; only one run is allowed at a time, and evidence is offered only after cleanup and a passing result.
 
 Expected Tally input:
 
@@ -162,9 +174,12 @@ Upload `/mnt/challanse-data/fixtures/synthetic-tally.csv`. Four rows must import
 ```bash
 ./scripts/local-pilot.sh download-apk
 sha256sum artifacts/local-pilot/ChallanSe-Local-Pilot.apk
+jq -r '.apkSha256' /mnt/challanse-data/exports/runtime-manifest.json
 adb devices
 adb install -r artifacts/local-pilot/ChallanSe-Local-Pilot.apk
 ```
+
+The APK and runtime-manifest checksums must match. Do not install a stale APK.
 
 Expected install result:
 

@@ -59,6 +59,8 @@ Reviewer credentials are not created during provisioning. Each named reviewer re
 ./scripts/local-pilot.sh download-apk
 ```
 
+The organization administrator uses `https://LAN-IP:8444/operator` for live readiness, isolated synthetic acceptance, device status, evidence and guarded maintenance guidance. Reviewers continue to use `https://LAN-IP:8444/` for Inbox and Delta workflows. Privileged storage, firewall, reset and destroy actions remain terminal-only.
+
 Install `artifacts/local-pilot/ChallanSe-Local-Pilot.apk` on the test Android device. Then generate a ten-minute enrollment link:
 
 ```bash

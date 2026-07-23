@@ -33,3 +33,24 @@ def verify_audit_chains(database_url: str) -> dict[str, object]:
         previous_by_chain[chain] = expected_hash
         checked += 1
     return {"valid": True, "eventsChecked": checked, "chainsChecked": len(previous_by_chain)}
+
+
+def verify_local_operator_chain(database_url: str) -> dict[str, object]:
+    with system_connection(database_url, row_factory=dict_row) as connection:
+        rows = connection.execute(
+            """
+            SELECT event_type, event_json, previous_hash, event_hash
+            FROM local_operator_events
+            ORDER BY created_at, id
+            """
+        ).fetchall()
+    previous_hash = ""
+    checked = 0
+    for row in rows:
+        event = {"eventType": str(row["event_type"]), **dict(row["event_json"])}
+        expected_hash = audit_event_hash(previous_hash, event)
+        if str(row["previous_hash"] or "") != previous_hash or str(row["event_hash"]) != expected_hash:
+            return {"valid": False, "eventsChecked": checked, "failedChain": "local-operator"}
+        previous_hash = expected_hash
+        checked += 1
+    return {"valid": True, "eventsChecked": checked, "chainsChecked": 1 if rows else 0}

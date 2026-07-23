@@ -45,12 +45,17 @@ load_env() {
   source "$ENV_FILE"
   set +a
   export CHALLANSE_CONFIG_ROOT="$CONFIG_ROOT" CHALLANSE_DATA_ROOT="$DATA_ROOT" CHALLANSE_RUNTIME_ROOT="$RUNTIME_ROOT"
+  LOCAL_HOST_UID="$(id -u)"
+  LOCAL_HOST_GID="$(id -g)"
+  export LOCAL_HOST_UID LOCAL_HOST_GID
   mkdir -p "$RUNTIME_ROOT/tls"
-  chmod 700 "$RUNTIME_ROOT" "$RUNTIME_ROOT/tls"
+  chmod 700 "$RUNTIME_ROOT"
+  chmod 755 "$RUNTIME_ROOT/tls"
   cp "$EDGE_VARS" "$RUNTIME_ROOT/edge.dev.vars"
   cp "$REVIEWER_VARS" "$RUNTIME_ROOT/reviewer.dev.vars"
   cp "$TLS_DIR"/*.crt "$TLS_DIR"/*.key "$RUNTIME_ROOT/tls/"
   chmod 600 "$RUNTIME_ROOT"/*.vars "$RUNTIME_ROOT/tls"/*.key
+  chmod 644 "$RUNTIME_ROOT/tls"/*.crt
 }
 compose() {
   load_env
@@ -81,6 +86,17 @@ require_docker_storage_visibility() {
     --entrypoint python challanse-local-pilot-api \
     -c 'from pathlib import Path; raise SystemExit(0 if Path("/host-data").is_dir() else 1)' >/dev/null 2>&1 \
     || die "Docker cannot access $DATA_ROOT. For Snap Docker, restart its service after opening storage, then retry."
+  docker run --rm --network none --read-only \
+    --user "$(id -u):$(id -g)" \
+    --mount "type=bind,src=$DATA_ROOT/fixtures,dst=/fixtures" \
+    --mount "type=bind,src=$DATA_ROOT/exports,dst=/exports" \
+    --entrypoint python challanse-local-pilot-api \
+    -c 'from pathlib import Path
+paths = [Path("/fixtures/.write-check"), Path("/exports/.write-check")]
+for path in paths:
+    path.write_text("ok", encoding="utf-8")
+    path.unlink()' >/dev/null 2>&1 \
+    || die "Local services cannot write synthetic fixtures or evidence as the current desktop user."
 }
 mount_host_storage() {
   local current_mount expected_uuid mounted_uuid
@@ -301,6 +317,9 @@ LOCAL_DATA_ROOT=$CONTAINER_DATA_ROOT
 LOCAL_STORAGE_LIMIT_BYTES=20000000000
 LOCAL_AUTH_ENCRYPTION_KEY=$auth_key
 LOCAL_SESSION_TTL_MINUTES=480
+LOCAL_ACCEPTANCE_BASE_URL=http://edge:8787
+LOCAL_BUILD_COMMIT_SHA=$(git rev-parse HEAD)
+LOCAL_TLS_CERTIFICATE_PATH=/run/challanse-tls/pilot.crt
 LOCAL_REVIEWER_GATEWAY_SECRET=$gateway_secret
 LOCAL_REVIEWER_EMAIL=admin@constrovet.com
 LOCAL_REVIEWER_EMAILS=admin@constrovet.com,bhagat.taran@gmail.com
@@ -331,6 +350,56 @@ ensure_local_auth_key() {
     printf 'LOCAL_SESSION_TTL_MINUTES=480\n' >>"$ENV_FILE"
     chmod 600 "$ENV_FILE"
   fi
+}
+ensure_local_test_config() {
+  [[ -f "$ENV_FILE" ]] || return
+  if ! grep -q '^LOCAL_ACCEPTANCE_BASE_URL=' "$ENV_FILE"; then
+    printf 'LOCAL_ACCEPTANCE_BASE_URL=http://edge:8787\n' >>"$ENV_FILE"
+  fi
+  if grep -q '^LOCAL_BUILD_COMMIT_SHA=' "$ENV_FILE"; then
+    sed -i "s|^LOCAL_BUILD_COMMIT_SHA=.*|LOCAL_BUILD_COMMIT_SHA=$(git rev-parse HEAD)|" "$ENV_FILE"
+  else
+    printf 'LOCAL_BUILD_COMMIT_SHA=%s\n' "$(git rev-parse HEAD)" >>"$ENV_FILE"
+  fi
+  chmod 600 "$ENV_FILE"
+}
+record_local_runtime_manifest() {
+  local apk="$ROOT/apps/mobile/android/app/build/outputs/apk/localPilot/app-localPilot.apk"
+  local apk_sha="" model_digest="" images_json source_clean source_state_sha
+  [[ -f "$apk" ]] && apk_sha="$(sha256sum "$apk" | awk '{print $1}')"
+  model_digest="$(curl -fsS http://127.0.0.1:11434/api/tags | jq -r --arg model "qwen2.5:7b" '.models[] | select(.name == $model) | .digest' | head -n 1)"
+  images_json="$(compose images --format json)"
+  source_clean=true
+  [[ -z "$(git status --porcelain)" ]] || source_clean=false
+  source_state_sha="$(
+    {
+      git diff --binary HEAD --
+      while IFS= read -r -d '' path; do
+        printf 'untracked:%s\n' "$path"
+        sha256sum -- "$path"
+      done < <(git ls-files --others --exclude-standard -z)
+    } | sha256sum | awk '{print $1}'
+  )"
+  jq -n \
+    --arg commit "$(git rev-parse HEAD)" \
+    --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg apkSha256 "$apk_sha" \
+    --arg model "qwen2.5:7b" \
+    --arg modelDigest "$model_digest" \
+    --arg sourceStateSha256 "$source_state_sha" \
+    --argjson sourceTreeClean "$source_clean" \
+    --argjson containers "$images_json" \
+    '{
+      commitSha: $commit,
+      sourceTreeClean: $sourceTreeClean,
+      sourceStateSha256: $sourceStateSha256,
+      generatedAt: $generatedAt,
+      apkSha256: $apkSha256,
+      model: {name: $model, digest: $modelDigest},
+      containers: $containers,
+      awsDeploymentFrozen: true,
+      cloudflareRequired: false
+    }' >"$DATA_ROOT/exports/runtime-manifest.json"
 }
 ensure_private_ollama_url() {
   [[ -f "$ENV_FILE" ]] || return
@@ -535,6 +604,7 @@ provision() {
   chown -R "$USER":"$(id -gn)" "$DATA_ROOT"/{exports,backups,fixtures}
   if [[ -e "$ENV_FILE" ]]; then
     ensure_local_auth_key
+    ensure_local_test_config
     validate_existing_provision_state "$lan_ip"
     printf 'Validated existing local secrets and pilot CA; resuming provisioning without rotation.\n'
   else
@@ -545,7 +615,9 @@ provision() {
   python3 "$ROOT/scripts/generate-local-fixtures.py" "$DATA_ROOT/fixtures"
   (cd "$ROOT" && CI=true npm run build --workspace @challanse/reviewer)
   (cd "$ROOT" && CI=true npm run build:local-pilot --workspace @challanse/mobile)
+  download_apk
   compose build
+  record_local_runtime_manifest
   printf 'Provisioning complete. Secrets are stored with mode 600 under %s.\n' "$CONFIG_ROOT"
 }
 reviewer_enroll() {
@@ -623,6 +695,7 @@ start_stack() {
   require_docker_storage_visibility
   local mode="${1:---lan}"
   ensure_private_ollama_url
+  ensure_local_test_config
   load_env
   [[ "$(local_ip)" == "$CHALLANSE_LAN_IP" ]] || die "LAN IP changed. Reissue the pilot certificate before startup."
   if [[ "$mode" == "--both" ]]; then
@@ -653,6 +726,7 @@ start_stack() {
   fi
   connect_private_ollama
   prewarm
+  record_local_runtime_manifest
   for _ in $(seq 1 60); do
     if curl -fsS --cacert "$TLS_DIR/pilot-ca.crt" "https://$CHALLANSE_LAN_IP:8443/health" >/dev/null 2>&1; then
       printf 'GREEN: ChallanSe synthetic pilot is ready on LAN.\nReviewer: https://%s:8444\n' "$CHALLANSE_LAN_IP"
@@ -840,6 +914,7 @@ Commands:
   download-apk       Copy the local pilot APK and print SHA-256
   acceptance         Upload and process 50 synthetic receipts
   evidence           Export commit, image, model, OCR, APK, and limits evidence
+  install-launcher    Add the guarded Ubuntu desktop launcher
   stop               Stop services without deleting data
   reset              Reset server-side synthetic data
   destroy            Delete local synthetic data and secrets
@@ -872,6 +947,7 @@ case "${1:-}" in
   download-apk) download_apk ;;
   acceptance) acceptance ;;
   evidence) evidence ;;
+  install-launcher) "$ROOT/scripts/install-local-launcher.sh" ;;
   stop) stop_stack ;;
   reset) reset_stack ;;
   destroy) destroy_stack ;;

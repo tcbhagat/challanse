@@ -3,6 +3,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+fail() {
+  echo "Production configuration check failed: $*" >&2
+  exit 1
+}
+
 for required_command in bash grep jq shellcheck; do
   command -v "$required_command" >/dev/null 2>&1 || {
     echo "Required CI command is unavailable: $required_command" >&2
@@ -29,10 +34,13 @@ bash -n scripts/test-budget-controls.sh
 bash -n scripts/zero-cost-readiness.sh
 bash -n scripts/test-zero-cost-readiness.sh
 bash -n scripts/local-pilot.sh
+bash -n scripts/challanse-local-launcher.sh
+bash -n scripts/install-local-launcher.sh
+bash -n scripts/test-local-ui.sh
 bash -n scripts/quality-loop.sh
 bash -n scripts/test-local-pilot-storage.sh
 shellcheck -e SC1090 scripts/test-waf-provisioning.sh
-shellcheck -e SC1090 scripts/go-live.sh scripts/rollback-production.sh scripts/local-pilot.sh scripts/quality-loop.sh scripts/test-local-pilot-storage.sh scripts/test-production-config.sh scripts/test-turnstile-recovery.sh scripts/test-production-hardening.sh scripts/test-budget-controls.sh scripts/zero-cost-readiness.sh scripts/test-zero-cost-readiness.sh
+shellcheck -e SC1090 scripts/go-live.sh scripts/rollback-production.sh scripts/local-pilot.sh scripts/challanse-local-launcher.sh scripts/install-local-launcher.sh scripts/test-local-ui.sh scripts/quality-loop.sh scripts/test-local-pilot-storage.sh scripts/test-production-config.sh scripts/test-turnstile-recovery.sh scripts/test-production-hardening.sh scripts/test-budget-controls.sh scripts/zero-cost-readiness.sh scripts/test-zero-cost-readiness.sh
 bash scripts/test-local-pilot-storage.sh
 test -x scripts/go-live.sh
 test -x scripts/rollback-production.sh
@@ -231,6 +239,21 @@ if grep -RIE --exclude='test-production-config.sh' '(gho_[A-Za-z0-9]+|sk_live_[A
   exit 1
 fi
 grep -Fq "RUNTIME_ROOT=\"\${XDG_CACHE_HOME:-\$HOME/.cache}/challanse-local-runtime\"" scripts/local-pilot.sh
+grep -Fq "chmod 755 \"\$RUNTIME_ROOT/tls\"" scripts/local-pilot.sh \
+  || fail "runtime TLS directory must expose public certificates to non-root services"
+grep -Fq "chmod 644 \"\$RUNTIME_ROOT/tls\"/*.crt" scripts/local-pilot.sh \
+  || fail "runtime public certificates must be readable without exposing private keys"
+grep -Fq "user: \"\${LOCAL_HOST_UID:-1000}:\${LOCAL_HOST_GID:-1000}\"" deploy/local/docker-compose.yml \
+  || fail "local Python services must use the current non-root desktop identity for encrypted evidence writes"
+grep -Fq 'Local services cannot write synthetic fixtures or evidence' scripts/local-pilot.sh \
+  || fail "startup must fail closed when encrypted evidence directories are not writable"
+grep -Fq "sourceTreeClean: \$sourceTreeClean" scripts/local-pilot.sh \
+  || fail "runtime evidence must disclose whether the source tree was clean"
+grep -Fq 'record_local_runtime_manifest' scripts/local-pilot.sh \
+  || fail "local startup must record the running container identities"
+provision_body="$(sed -n '/^provision() {/,/^}/p' scripts/local-pilot.sh)"
+printf '%s\n' "$provision_body" | grep -Fq 'download_apk' \
+  || fail "local provisioning must refresh the distributable APK after every successful build"
 grep -Fxq '.local-runtime' .dockerignore
 grep -Fxq '**/*.key' .dockerignore
 grep -Fq 'WHERE id <> %s AND active LIMIT 1' services/enrichment/app/local_seed.py
@@ -257,9 +280,9 @@ grep -Fq 'No successful acceptance report from the last 24 hours exists' scripts
   || fail "evidence generation must require recent successful acceptance"
 grep -Fq 'python -m app.local_acceptance verify-clean' scripts/local-pilot.sh \
   || fail "evidence generation must verify acceptance cleanup"
-grep -Fq '"po_number,material_code,quantity,unit\n"' scripts/generate-local-fixtures.py \
+grep -Fq '"po_number,material_code,quantity,unit\n"' services/enrichment/app/local_fixtures.py \
   || fail "synthetic Tally fixture must match the importer schema"
-if grep -Fq 'material_description,unit,po_quantity' scripts/generate-local-fixtures.py; then
+if grep -Fq 'material_description,unit,po_quantity' services/enrichment/app/local_fixtures.py; then
   fail "synthetic Tally fixture must not use the obsolete schema"
 fi
 grep -Fq 'test-data) test_data ;;' scripts/local-pilot.sh \

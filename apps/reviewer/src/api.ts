@@ -71,6 +71,16 @@ export type ReviewerContext = {
 
 export function getReviewerContext() { return api<ReviewerContext>('/v1/reviewer/context'); }
 
+export async function logoutReviewer() {
+  const response = await fetch('/logout', {
+    method: 'POST',
+    credentials: 'include',
+    headers: csrfHeaders('POST'),
+  });
+  if (!response.ok) throw new ApiError(response.status, 'Sign out could not be completed.');
+  window.location.assign('/login');
+}
+
 export async function downloadAuditExport(format: 'csv' | 'json') {
   const response = await fetch(`${API_BASE_URL}/v1/reviewer/audit-export?format=${format}`, {
     credentials: 'include',
@@ -212,4 +222,105 @@ export function importPurchaseOrders(csvContent: string) {
 
 export function listReconciliation() {
   return api<{ rows: ReconciliationRow[] }>('/v1/reviewer/reconciliation');
+}
+
+export type LocalStatus = {
+  syntheticMode: boolean;
+  pilotMode: string;
+  database: 'ready' | 'unavailable';
+  objectStore: 'ready' | 'unavailable';
+  ollama: 'ready' | 'unavailable';
+  model: string;
+  tesseract: 'ready' | 'unavailable';
+  tesseractVersion: string;
+  queueDepth: number;
+  terminalFailures: number;
+  auditChain: { valid: boolean; eventsChecked: number; chainsChecked: number };
+  certificate: { status: 'ready' | 'warning' | 'unavailable'; expiresAt: string | null; daysRemaining: number | null };
+  testData: { ready: boolean };
+  latestTestRun: { id: string; status: string; completedAt: string | null; evidenceAvailable: boolean } | null;
+  storage: {
+    usedBytes: number;
+    limitBytes: number;
+    percent: number;
+    warning: boolean;
+    uploadsPaused: boolean;
+  };
+};
+
+export type LocalTestRun = {
+  id: string;
+  status: 'QUEUED' | 'RUNNING' | 'CANCEL_REQUESTED' | 'CANCELLED' | 'PASSED' | 'FAILED';
+  stage: string;
+  progress: number;
+  report: Record<string, unknown>;
+  errorCode: string | null;
+  requestedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  artifactsAvailable: boolean;
+};
+
+export function getLocalStatus() {
+  return api<LocalStatus>('/v1/admin/local/status');
+}
+
+export function listLocalTestRuns() {
+  return api<{ runs: LocalTestRun[] }>('/v1/admin/local/test-runs?limit=20');
+}
+
+export function createLocalTestRun() {
+  return api<LocalTestRun>('/v1/admin/local/test-runs', { method: 'POST', body: '{}' });
+}
+
+export function getLocalTestRun(runId: string) {
+  return api<LocalTestRun>(`/v1/admin/local/test-runs/${encodeURIComponent(runId)}`);
+}
+
+export function cancelLocalTestRun(runId: string) {
+  return api<LocalTestRun>(`/v1/admin/local/test-runs/${encodeURIComponent(runId)}/cancel`, {
+    method: 'POST',
+    body: '{}',
+  });
+}
+
+export function refreshLocalTestData() {
+  return api<{ status: string; fixtureCount: number }>('/v1/admin/local/test-data/refresh', {
+    method: 'POST',
+    body: '{}',
+  });
+}
+
+export function listLocalTestArtifacts(runId: string) {
+  return api<{ artifacts: Array<{ name: string; bytes: number }> }>(
+    `/v1/admin/local/test-runs/${encodeURIComponent(runId)}/artifacts`,
+  );
+}
+
+export async function downloadLocalTestArtifact(runId: string, name: string) {
+  const response = await fetch(
+    `${API_BASE_URL}/v1/admin/local/test-runs/${encodeURIComponent(runId)}/artifacts?name=${encodeURIComponent(name)}`,
+    {
+      credentials: 'include',
+      headers: {
+        ...csrfHeaders('GET'),
+        ...(activeSiteId ? { 'X-ChallanSe-Site-Id': activeSiteId } : {}),
+      },
+    },
+  );
+  if (!response.ok) throw new ApiError(response.status, 'Evidence artifact could not be downloaded.');
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+export function explainLocalDiagnostic(code: string) {
+  return api<{ code: string; guidance: string; advisory: string; modelAvailable: boolean }>(
+    '/v1/admin/local/explain',
+    { method: 'POST', body: JSON.stringify({ code }) },
+  );
 }

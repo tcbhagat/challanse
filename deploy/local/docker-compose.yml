@@ -4,6 +4,7 @@ x-backend: &backend
   build:
     context: ../../services/enrichment
     dockerfile: Dockerfile.local
+  user: "${LOCAL_HOST_UID:-1000}:${LOCAL_HOST_GID:-1000}"
   environment:
     ENVIRONMENT: ${ENVIRONMENT}
     SYNTHETIC_MODE: ${SYNTHETIC_MODE}
@@ -35,6 +36,9 @@ x-backend: &backend
     LOCAL_STORAGE_LIMIT_BYTES: ${LOCAL_STORAGE_LIMIT_BYTES}
     LOCAL_AUTH_ENCRYPTION_KEY: ${LOCAL_AUTH_ENCRYPTION_KEY}
     LOCAL_SESSION_TTL_MINUTES: ${LOCAL_SESSION_TTL_MINUTES:-480}
+    LOCAL_ACCEPTANCE_BASE_URL: ${LOCAL_ACCEPTANCE_BASE_URL:-http://edge:8787}
+    LOCAL_BUILD_COMMIT_SHA: ${LOCAL_BUILD_COMMIT_SHA:-unknown}
+    LOCAL_TLS_CERTIFICATE_PATH: ${LOCAL_TLS_CERTIFICATE_PATH:-/run/challanse-tls/pilot.crt}
     PUBLIC_API_URL: ${PUBLIC_API_URL}
     REVIEW_DASHBOARD_URL: ${REVIEW_DASHBOARD_URL}
     PLAY_INTEGRITY_PROVIDER: disabled
@@ -149,6 +153,8 @@ services:
       retries: 30
     volumes:
       - ${CHALLANSE_DATA_ROOT}:/srv/challanse:ro
+      - ${CHALLANSE_DATA_ROOT}/fixtures:/srv/challanse/fixtures:rw
+      - ${CHALLANSE_RUNTIME_ROOT}/tls:/run/challanse-tls:ro
     restart: "no"
 
   worker:
@@ -157,9 +163,11 @@ services:
     depends_on:
       api:
         condition: service_healthy
-    networks: [backend, ocr-egress]
+    networks: [backend, frontend, ocr-egress]
     volumes:
       - ${CHALLANSE_DATA_ROOT}:/srv/challanse:ro
+      - ${CHALLANSE_DATA_ROOT}/fixtures:/srv/challanse/fixtures:rw
+      - ${CHALLANSE_DATA_ROOT}/exports:/srv/challanse/exports:rw
     restart: "no"
 
   edge:

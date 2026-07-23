@@ -26,6 +26,7 @@ import {
   type AdminSummary,
   type ReviewerContext,
 } from './api';
+import OperatorApp from './OperatorApp';
 
 const filters: Array<{ value: ReceiptStatus; label: string }> = [
   { value: 'NEEDS_REVIEW', label: 'Needs review' },
@@ -261,14 +262,15 @@ function AdminPanel({ onClose, role }: { onClose: () => void; role: string }) {
   </div>;
 }
 
-export default function App() {
-  const [view, setView] = useState<'INBOX' | 'DELTA'>('INBOX');
+function ReviewerApp() {
+  const query = useMemo(() => new URLSearchParams(window.location.search), []);
+  const [view, setView] = useState<'INBOX' | 'DELTA'>(query.get('view') === 'DELTA' ? 'DELTA' : 'INBOX');
   const [status, setStatus] = useState<ReceiptStatus>('NEEDS_REVIEW');
   const [receipts, setReceipts] = useState<ReceiptListItem[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [busy, setBusy] = useState(true);
   const [message, setMessage] = useState('');
-  const [adminOpen, setAdminOpen] = useState(false);
+  const [adminOpen, setAdminOpen] = useState(query.get('setup') === '1');
   const [context, setContext] = useState<ReviewerContext | null>(null);
   const [activeSite, setActiveSite] = useState('');
   const [invitationCode, setInvitationCode] = useState('');
@@ -318,7 +320,7 @@ export default function App() {
   };
 
   return <div className="app-shell">
-    <header className="topbar"><a href="https://challanse.constrovet.com" className="brand"><span aria-hidden="true">▦</span>ChallanSe</a>{context && context.sites.length > 1 ? <label className="site-switch">Site<select value={activeSite} onChange={(event) => { setActiveSiteId(event.target.value); setActiveSite(event.target.value); }}><option value="">Choose site</option>{context.sites.map((site) => <option key={site.siteId} value={site.siteId}>{site.siteName}</option>)}</select></label> : null}<nav className="view-switch" aria-label="Reviewer views"><button className={view === 'INBOX' ? 'active' : ''} onClick={() => setView('INBOX')} disabled={!activeSite}>Inbox</button><button className={view === 'DELTA' ? 'active' : ''} onClick={() => setView('DELTA')} disabled={!activeSite}>Delta</button></nav>{canAdmin ? <button className="button secondary compact" onClick={() => setAdminOpen(true)}>Site setup</button> : null}</header>
+    <header className="topbar"><a href="/" className="brand"><span aria-hidden="true">▦</span>ChallanSe <small>Synthetic test</small></a>{context && context.sites.length > 1 ? <label className="site-switch">Site<select value={activeSite} onChange={(event) => { setActiveSiteId(event.target.value); setActiveSite(event.target.value); }}><option value="">Choose site</option>{context.sites.map((site) => <option key={site.siteId} value={site.siteId}>{site.siteName}</option>)}</select></label> : null}<nav className="view-switch" aria-label="Reviewer views"><button className={view === 'INBOX' ? 'active' : ''} onClick={() => setView('INBOX')} disabled={!activeSite}>Inbox</button><button className={view === 'DELTA' ? 'active' : ''} onClick={() => setView('DELTA')} disabled={!activeSite}>Delta</button></nav>{activeAccess?.role === 'ORG_ADMIN' ? <a className="button secondary compact" href="/operator">Operator</a> : null}{canAdmin ? <button className="button secondary compact" onClick={() => setAdminOpen(true)}>Site setup</button> : null}</header>
     <main>
       {!context ? <section className="membership-accept"><h1>Join your ChallanSe team</h1><p>Enter the one-time code supplied by your organization administrator.</p><label>Invitation code<input value={invitationCode} onChange={(event) => setInvitationCode(event.target.value)} autoComplete="one-time-code" /></label><button className="button primary" disabled={busy || invitationCode.trim().length < 16} onClick={() => void acceptInvitation()}>Accept invitation</button></section> : null}
       {context && !activeSite ? <div className="notice" role="status"><strong>Choose a site to continue.</strong><span>Your access is limited to the sites listed above.</span></div> : null}
@@ -334,4 +336,8 @@ export default function App() {
     </main>
     {adminOpen && activeAccess ? <AdminPanel role={activeAccess.role} onClose={() => setAdminOpen(false)} /> : null}
   </div>;
+}
+
+export default function App() {
+  return window.location.pathname.startsWith('/operator') ? <OperatorApp /> : <ReviewerApp />;
 }
