@@ -154,6 +154,17 @@ grep -Fq 'RUN setcap -r /usr/bin/caddy' deploy/local/Dockerfile.caddy
 grep -Fq 'USER 1000:1000' deploy/local/Dockerfile.caddy
 grep -Fq ':8443 {' deploy/local/Caddyfile
 grep -Fq ':8444 {' deploy/local/Caddyfile
+grep -Fq '  route {' deploy/local/Caddyfile
+login_line="$(grep -nF '    handle /login* {' deploy/local/Caddyfile | cut -d: -f1)"
+auth_line="$(grep -nF '      forward_auth api:8080 {' deploy/local/Caddyfile | cut -d: -f1)"
+[[ -n "$login_line" && -n "$auth_line" && "$login_line" -lt "$auth_line" ]] || {
+  echo "Local login must be routed before forward_auth to prevent a redirect loop." >&2
+  exit 1
+}
+grep -A2 -F '    handle {' deploy/local/Caddyfile | grep -Fq '      route {' || {
+  echo "Protected reviewer routes must preserve forward_auth before SPA rewriting." >&2
+  exit 1
+}
 # shellcheck disable=SC2016 # Intentional literal source-code assertion.
 ip_literal_caddy_address='https://{$CHALLANSE_LAN_IP}'
 if grep -Fq "$ip_literal_caddy_address" deploy/local/Caddyfile; then

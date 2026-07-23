@@ -10,22 +10,28 @@
 
 :8444 {
   tls /etc/challanse-tls/pilot.crt /etc/challanse-tls/pilot.key
-  handle /login* {
-    reverse_proxy api:8080
-  }
-  handle /logout* {
-    reverse_proxy api:8080
-  }
-  forward_auth api:8080 {
-    uri /v1/local/auth
-    copy_headers X-ChallanSe-Local-Reviewer-Email X-ChallanSe-Local-Reviewer-Subject
-  }
-  handle_path /api/* {
-    reverse_proxy edge:8787 {
-      header_up X-ChallanSe-Local-Reviewer-Secret {$LOCAL_REVIEWER_GATEWAY_SECRET}
+  route {
+    handle /login* {
+      reverse_proxy api:8080
+    }
+    handle /logout* {
+      reverse_proxy api:8080
+    }
+    handle {
+      route {
+        forward_auth api:8080 {
+          uri /v1/local/auth
+          copy_headers X-ChallanSe-Local-Reviewer-Email X-ChallanSe-Local-Reviewer-Subject
+        }
+        handle_path /api/* {
+          reverse_proxy edge:8787 {
+            header_up X-ChallanSe-Local-Reviewer-Secret {$LOCAL_REVIEWER_GATEWAY_SECRET}
+          }
+        }
+        root * /srv/reviewer
+        try_files {path} /index.html
+        file_server
+      }
     }
   }
-  root * /srv/reviewer
-  try_files {path} /index.html
-  file_server
 }
