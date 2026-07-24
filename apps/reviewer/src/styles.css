@@ -94,6 +94,9 @@ body { background: var(--navy-deep); color: #e8eef7; }
 .receipt-card, .notice, .empty, .membership-accept, .table-scroll, .admin-panel { background: var(--panel); border-color: var(--line); }
 .receipt-media { background: #02060c; }
 .status { background: #0b1725; border: 1px solid var(--line); }
+.status-needs_review { color: #ffd66b; }
+.status-verified { color: #65e7d0; }
+.status-rejected { color: #fda4af; }
 .receipt-context, .ocr-evidence, .admin-panel > header, .admin-section, .enrollment, .audit-actions, .device-row { border-color: var(--line); }
 .receipt-context span, .devices p, .enrollment p, .admin-section p, .member-list small, .qr-result span { color: var(--muted); }
 .ocr-evidence summary { color: #67d4ff; }
@@ -246,4 +249,194 @@ th, td { border-color: var(--line); }
   .run-table-row { align-items: start; grid-template-columns: 1fr auto; padding-block: 14px; }
   .run-table-row > :nth-child(3) { color: var(--muted); }
   .maintenance-grid { grid-template-columns: 1fr; }
+}
+
+/* Focused client reviewer workflow */
+.reviewer-signout {
+  color: #c9d5e3;
+  min-height: 44px;
+  padding: 8px 10px;
+}
+.receipt-card {
+  grid-template-columns: minmax(300px, 42%) minmax(0, 1fr);
+}
+.receipt-media {
+  grid-row: 1 / span 2;
+  min-height: 520px;
+}
+.receipt-context {
+  align-items: center;
+  padding-block: 18px;
+}
+.receipt-context > div:last-child {
+  text-align: right;
+}
+.review-form {
+  gap: 16px;
+  padding-top: 20px;
+}
+.review-form label {
+  min-width: 0;
+}
+.review-form select,
+.review-form input {
+  font-size: 1rem;
+}
+.field-preview {
+  color: var(--muted);
+  font-size: .76rem;
+  font-weight: 500;
+  min-height: 1.1rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.optional-fields,
+.source-details {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  overflow: hidden;
+}
+.optional-fields summary,
+.source-details summary {
+  align-items: center;
+  color: #b8c6d5;
+  cursor: pointer;
+  display: flex;
+  font-size: .82rem;
+  font-weight: 750;
+  min-height: 48px;
+  padding: 10px 14px;
+}
+.optional-fields[open] summary,
+.source-details[open] summary {
+  border-bottom: 1px solid var(--line);
+}
+.optional-fields > div {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: 1fr 1fr;
+  padding: 14px;
+}
+.source-details dl {
+  display: grid;
+  gap: 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+  padding: 8px 14px 14px;
+}
+.source-details dl > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px 12px 8px 0;
+}
+.source-details dt {
+  color: var(--muted);
+  font-size: .7rem;
+  text-transform: uppercase;
+}
+.source-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.review-actions {
+  border-top: 1px solid var(--line);
+  padding-top: 18px;
+}
+.review-actions .button {
+  min-width: 140px;
+}
+
+@media (max-width: 980px) {
+  .topbar {
+    gap: 10px;
+    height: auto;
+    min-height: 68px;
+    padding-block: 10px;
+  }
+  .receipt-card {
+    grid-template-columns: minmax(260px, 38%) minmax(0, 1fr);
+  }
+  .receipt-media {
+    min-height: 470px;
+  }
+  .review-form {
+    grid-template-columns: 1fr;
+  }
+  .review-form .wide,
+  .review-actions {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 760px) {
+  .topbar {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+  }
+  .view-switch {
+    grid-column: 1 / -1;
+    order: 5;
+  }
+  .view-switch button {
+    flex: 1;
+  }
+  .site-switch {
+    grid-column: 1 / -1;
+  }
+  .reviewer-signout {
+    grid-column: 3;
+    grid-row: 1;
+    justify-self: end;
+  }
+  .topbar > .button.compact {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .brand small {
+    font-size: 0;
+    padding-inline: 6px;
+  }
+  .brand small::after {
+    content: "TEST";
+    font-size: .58rem;
+  }
+  .receipt-card {
+    display: flex;
+    flex-direction: column;
+  }
+  .receipt-media {
+    height: min(58vh, 430px);
+    min-height: 300px;
+  }
+  .receipt-context {
+    grid-template-columns: 1fr auto;
+  }
+  .review-form {
+    padding: 18px;
+  }
+  .optional-fields > div,
+  .source-details dl {
+    grid-template-columns: 1fr;
+  }
+  .source-details dl > div {
+    border-bottom: 1px solid var(--line);
+    padding-right: 0;
+  }
+  .source-details dl > div:last-child {
+    border-bottom: 0;
+  }
+  .review-actions {
+    position: sticky;
+    bottom: 0;
+    background: var(--panel);
+    margin: 0 -18px -18px;
+    padding: 14px 18px calc(14px + env(safe-area-inset-bottom));
+    z-index: 5;
+  }
+  .review-actions .button {
+    flex: 1;
+    min-width: 0;
+  }
 }

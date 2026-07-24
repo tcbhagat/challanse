@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ComponentType } from 'react';
 import {
   ApiError,
   cancelLocalTestRun,
@@ -20,6 +20,7 @@ import {
 } from './api';
 
 type OperatorSection = 'OVERVIEW' | 'TEST' | 'DEVICES' | 'REVIEWER' | 'RECONCILIATION' | 'EVIDENCE' | 'MAINTENANCE';
+type AdministrationPanelProps = { onClose: () => void; role: string };
 
 const navigation: Array<{ id: OperatorSection; label: string; icon: string }> = [
   { id: 'OVERVIEW', label: 'Overview', icon: '⌂' },
@@ -50,7 +51,11 @@ function OperatorLoading() {
   return <div className="operator-loading" role="status"><span /><strong>Loading local pilot status…</strong></div>;
 }
 
-export default function OperatorApp() {
+export default function OperatorApp({
+  AdministrationPanel,
+}: {
+  AdministrationPanel?: ComponentType<AdministrationPanelProps>;
+}) {
   const [section, setSection] = useState<OperatorSection>('OVERVIEW');
   const [status, setStatus] = useState<LocalStatus | null>(null);
   const [runs, setRuns] = useState<LocalTestRun[]>([]);
@@ -62,6 +67,7 @@ export default function OperatorApp() {
   const [authorized, setAuthorized] = useState<boolean | null>(null);
   const [artifacts, setArtifacts] = useState<Array<{ name: string; bytes: number }>>([]);
   const [diagnostic, setDiagnostic] = useState<{ guidance: string; advisory: string; modelAvailable: boolean } | null>(null);
+  const [administrationOpen, setAdministrationOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -228,7 +234,7 @@ export default function OperatorApp() {
         </section> : null}
 
         {section === 'DEVICES' ? <section className="operator-section">
-          <div className="operator-heading"><div><p>Local devices</p><h1>Enrolled Android devices</h1><span>Enrollment QR creation remains in Site setup on the reviewer screen.</span></div><a className="button primary" href="/?setup=1">Open Site setup</a></div>
+          <div className="operator-heading"><div><p>Site administration</p><h1>Devices and setup</h1><span>Manage site settings, vendors, team access and enrolled devices here.</span></div><button className="button primary" onClick={() => setAdministrationOpen(true)}>Manage site and devices</button></div>
           <div className="device-grid">{summary?.devices.length ? summary.devices.map((device) => <article className="operator-device" key={device.id}><div><StatusMark ready={device.active} /><h2>{device.name}</h2></div><dl><dt>App</dt><dd>{device.appVersion}</dd><dt>Last seen</dt><dd>{device.lastSeenAt ? formatDate(device.lastSeenAt) : 'Not yet'}</dd><dt>Status</dt><dd>{device.active ? 'Active' : 'Revoked'}</dd></dl>{device.active ? <button className="button danger" onClick={async () => { await revokeDevice(device.id); await load(); }}>Revoke device</button> : null}</article>) : <div className="empty operator-empty">No devices enrolled.</div>}</div>
         </section> : null}
 
@@ -253,6 +259,7 @@ export default function OperatorApp() {
       </main>
       <nav className="operator-bottom-nav" aria-label="Mobile operator navigation">{navigation.filter((item) => ['OVERVIEW', 'TEST', 'DEVICES', 'EVIDENCE', 'MAINTENANCE'].includes(item.id)).map((item) => <button key={item.id} className={section === item.id ? 'active' : ''} onClick={() => setSection(item.id)}><span aria-hidden="true">{item.icon}</span>{item.label === 'MAINTENANCE' ? 'More' : item.label}</button>)}</nav>
     </div>
+    {administrationOpen && AdministrationPanel ? <AdministrationPanel role="ORG_ADMIN" onClose={() => setAdministrationOpen(false)} /> : null}
   </div>;
 }
 

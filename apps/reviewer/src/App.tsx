@@ -16,6 +16,7 @@ import {
   importPurchaseOrders,
   listReceipts,
   listReconciliation,
+  logoutReviewer,
   reviewReceipt,
   revokeDevice,
   saveOrganizationQuota,
@@ -38,7 +39,21 @@ function formatTime(unix: number) {
   return new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(unix * 1000));
 }
 
-function ReceiptCard({ receipt, onSaved }: { receipt: ReceiptListItem; onSaved: () => void }) {
+const commonUnits = ['BAG', 'KG', 'TON', 'NOS', 'CUM', 'UNIT'];
+
+function uniqueOptions(values: string[]) {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function ReceiptCard({
+  receipt,
+  purchaseOrders,
+  onSaved,
+}: {
+  receipt: ReceiptListItem;
+  purchaseOrders: ReconciliationRow[];
+  onSaved: () => void;
+}) {
   const [challanNumber, setChallanNumber] = useState(receipt.challanNumber);
   const [poNumber, setPoNumber] = useState(receipt.poNumber);
   const [materialCode, setMaterialCode] = useState(receipt.materialCode);
@@ -48,6 +63,67 @@ function ReceiptCard({ receipt, onSaved }: { receipt: ReceiptListItem; onSaved: 
   const [notes, setNotes] = useState(receipt.notes);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  const editable = receipt.status === 'NEEDS_REVIEW';
+
+  const poOptions = useMemo(
+    () => uniqueOptions([receipt.poNumber, ...purchaseOrders.map((row) => row.poNumber)]),
+    [purchaseOrders, receipt.poNumber],
+  );
+  const materialRows = useMemo(
+    () => purchaseOrders.filter((row) => !poNumber || row.poNumber === poNumber),
+    [poNumber, purchaseOrders],
+  );
+  const materialOptions = useMemo(
+    () => uniqueOptions([receipt.materialCode, ...materialRows.map((row) => row.materialCode)]),
+    [materialRows, receipt.materialCode],
+  );
+  const unitOptions = useMemo(
+    () => uniqueOptions([receipt.unit, unit, ...materialRows.map((row) => row.unit), ...commonUnits]),
+    [materialRows, receipt.unit, unit],
+  );
+
+  useEffect(() => {
+    if (!editable || poNumber || poOptions.length !== 1) return;
+    const nextPo = poOptions[0];
+    setPoNumber(nextPo);
+    const matchingRows = purchaseOrders.filter((row) => row.poNumber === nextPo);
+    if (matchingRows.length === 1) {
+      setMaterialCode(matchingRows[0].materialCode);
+      setUnit(matchingRows[0].unit);
+      setDescription(
+        matchingRows[0].materialCode === receipt.materialCode
+          ? receipt.materialDescription
+          : matchingRows[0].materialCode,
+      );
+    }
+  }, [editable, poNumber, poOptions, purchaseOrders, receipt.materialCode, receipt.materialDescription]);
+
+  const choosePo = (nextPo: string) => {
+    setPoNumber(nextPo);
+    const matchingRows = purchaseOrders.filter((row) => row.poNumber === nextPo);
+    if (matchingRows.length === 1) {
+      setMaterialCode(matchingRows[0].materialCode);
+      setUnit(matchingRows[0].unit);
+      setDescription(
+        matchingRows[0].materialCode === receipt.materialCode
+          ? receipt.materialDescription
+          : matchingRows[0].materialCode,
+      );
+    }
+  };
+
+  const chooseMaterial = (nextMaterial: string) => {
+    setMaterialCode(nextMaterial);
+    setDescription(
+      nextMaterial === receipt.materialCode
+        ? receipt.materialDescription
+        : nextMaterial,
+    );
+    const matchingRow = purchaseOrders.find(
+      (row) => row.poNumber === poNumber && row.materialCode === nextMaterial,
+    );
+    if (matchingRow) setUnit(matchingRow.unit);
+  };
 
   const submit = async (action: ReceiptReview['action']) => {
     setBusy(true);
@@ -73,7 +149,9 @@ function ReceiptCard({ receipt, onSaved }: { receipt: ReceiptListItem; onSaved: 
     }
   };
 
-  const editable = receipt.status === 'NEEDS_REVIEW';
+  const missingCount = [poNumber, materialCode, description, quantity, unit]
+    .filter((value) => !String(value).trim()).length;
+
   return (
     <article className="receipt-card">
       <div className="receipt-media">
@@ -82,20 +160,48 @@ function ReceiptCard({ receipt, onSaved }: { receipt: ReceiptListItem; onSaved: 
       </div>
       <div className="receipt-context">
         <div><strong>{receipt.vendorName}</strong><span>{formatTime(receipt.capturedAtUnix)}</span></div>
-        <div><strong>{receipt.capturedQuantity}</strong><span>Site-captured quantity</span></div>
+        <div><strong>{missingCount ? `${missingCount} field${missingCount === 1 ? '' : 's'} missing` : 'Ready to verify'}</strong><span>{editable ? 'Check and confirm' : 'Review completed'}</span></div>
       </div>
-      <details className="ocr-evidence" open={receipt.status === 'NEEDS_REVIEW'}>
-        <summary>OCR evidence {receipt.ocrConfidence === null ? '' : `· ${receipt.ocrConfidence.toFixed(1)}%`}</summary>
-        <pre>{JSON.stringify(receipt.rawOcrJson, null, 2)}</pre>
-      </details>
       <form className="review-form" onSubmit={(event) => { event.preventDefault(); void submit('VERIFY'); }}>
-        <label>Challan number<input value={challanNumber} onChange={(event) => setChallanNumber(event.target.value)} disabled={!editable || busy} /></label>
-        <label>PO number<input required value={poNumber} onChange={(event) => setPoNumber(event.target.value.toUpperCase())} disabled={!editable || busy} /></label>
-        <label>Material code<input required value={materialCode} onChange={(event) => setMaterialCode(event.target.value.toUpperCase())} disabled={!editable || busy} /></label>
-        <label className="wide">Material description<input required value={description} onChange={(event) => setDescription(event.target.value)} disabled={!editable || busy} /></label>
-        <label>Verified quantity<input required type="number" min="0.001" step="any" value={quantity} onChange={(event) => setQuantity(event.target.value)} disabled={!editable || busy} /></label>
-        <label>Unit<input required value={unit} onChange={(event) => setUnit(event.target.value.toUpperCase())} disabled={!editable || busy} /></label>
-        <label className="wide">Notes<textarea value={notes} onChange={(event) => setNotes(event.target.value)} disabled={!editable || busy} /></label>
+        <label>PO number
+          <select required aria-label="PO number" value={poNumber} onChange={(event) => choosePo(event.target.value)} disabled={!editable || busy}>
+            <option value="">Select PO</option>
+            {poOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+          </select>
+        </label>
+        <label>Challan number
+          <input value={challanNumber} onChange={(event) => setChallanNumber(event.target.value)} disabled={!editable || busy} />
+        </label>
+        <label>Material
+          <select required aria-label="Material" value={materialCode} onChange={(event) => chooseMaterial(event.target.value)} disabled={!editable || busy}>
+            <option value="">Select material</option>
+            {materialOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+          </select>
+          {description ? <span className="field-preview">{description}</span> : null}
+        </label>
+        <label>Quantity
+          <input required type="number" min="0.001" step="any" value={quantity} onChange={(event) => setQuantity(event.target.value)} disabled={!editable || busy} />
+        </label>
+        <label>Unit
+          <select required aria-label="Unit" value={unit} onChange={(event) => setUnit(event.target.value)} disabled={!editable || busy}>
+            {unitOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+          </select>
+        </label>
+        <details className="optional-fields wide" open={!description}>
+          <summary>More corrections</summary>
+          <div>
+            <label>Material description<input required value={description} onChange={(event) => setDescription(event.target.value)} disabled={!editable || busy} /></label>
+            <label>Notes<textarea value={notes} onChange={(event) => setNotes(event.target.value)} disabled={!editable || busy} /></label>
+          </div>
+        </details>
+        <details className="source-details wide">
+          <summary>Captured details</summary>
+          <dl>
+            <div><dt>Vendor</dt><dd>{receipt.vendorName}</dd></div>
+            <div><dt>Captured quantity</dt><dd>{receipt.capturedQuantity} {receipt.unit}</dd></div>
+            <div><dt>Captured</dt><dd>{formatTime(receipt.capturedAtUnix)}</dd></div>
+          </dl>
+        </details>
         {message ? <p className="form-message" role="alert">{message}</p> : null}
         {editable ? <div className="review-actions"><button type="button" className="button secondary" onClick={() => void submit('REJECT')} disabled={busy || !description || !quantity || !unit}>Reject</button><button className="button primary" disabled={busy || !poNumber || !materialCode || !description || !quantity || !unit}>{busy ? 'Saving…' : 'Verify receipt'}</button></div> : null}
       </form>
@@ -267,10 +373,10 @@ function ReviewerApp() {
   const [view, setView] = useState<'INBOX' | 'DELTA'>(query.get('view') === 'DELTA' ? 'DELTA' : 'INBOX');
   const [status, setStatus] = useState<ReceiptStatus>('NEEDS_REVIEW');
   const [receipts, setReceipts] = useState<ReceiptListItem[]>([]);
+  const [purchaseOrders, setPurchaseOrders] = useState<ReconciliationRow[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [busy, setBusy] = useState(true);
   const [message, setMessage] = useState('');
-  const [adminOpen, setAdminOpen] = useState(query.get('setup') === '1');
   const [context, setContext] = useState<ReviewerContext | null>(null);
   const [activeSite, setActiveSite] = useState('');
   const [invitationCode, setInvitationCode] = useState('');
@@ -304,9 +410,17 @@ function ReviewerApp() {
   }, [activeSite, nextCursor, status]);
 
   useEffect(() => { if (activeSite) void load(false); }, [activeSite, status]);
+  useEffect(() => {
+    if (!activeSite) {
+      setPurchaseOrders([]);
+      return;
+    }
+    void listReconciliation()
+      .then((result) => setPurchaseOrders(result.rows))
+      .catch(() => setPurchaseOrders([]));
+  }, [activeSite]);
   const title = useMemo(() => filters.find((filter) => filter.value === status)?.label || 'Receipts', [status]);
   const activeAccess = context?.sites.find((site) => site.siteId === activeSite);
-  const canAdmin = activeAccess?.role === 'ORG_ADMIN' || activeAccess?.role === 'SITE_ADMIN';
 
   const acceptInvitation = async () => {
     setBusy(true); setMessage('');
@@ -320,24 +434,23 @@ function ReviewerApp() {
   };
 
   return <div className="app-shell">
-    <header className="topbar"><a href="/" className="brand"><span aria-hidden="true">▦</span>ChallanSe <small>Synthetic test</small></a>{context && context.sites.length > 1 ? <label className="site-switch">Site<select value={activeSite} onChange={(event) => { setActiveSiteId(event.target.value); setActiveSite(event.target.value); }}><option value="">Choose site</option>{context.sites.map((site) => <option key={site.siteId} value={site.siteId}>{site.siteName}</option>)}</select></label> : null}<nav className="view-switch" aria-label="Reviewer views"><button className={view === 'INBOX' ? 'active' : ''} onClick={() => setView('INBOX')} disabled={!activeSite}>Inbox</button><button className={view === 'DELTA' ? 'active' : ''} onClick={() => setView('DELTA')} disabled={!activeSite}>Delta</button></nav>{activeAccess?.role === 'ORG_ADMIN' ? <a className="button secondary compact" href="/operator">Operator</a> : null}{canAdmin ? <button className="button secondary compact" onClick={() => setAdminOpen(true)}>Site setup</button> : null}</header>
+    <header className="topbar"><a href="/" className="brand"><span aria-hidden="true">▦</span>ChallanSe <small>Synthetic test</small></a>{context && context.sites.length > 1 ? <label className="site-switch">Site<select value={activeSite} onChange={(event) => { setActiveSiteId(event.target.value); setActiveSite(event.target.value); }}><option value="">Choose site</option>{context.sites.map((site) => <option key={site.siteId} value={site.siteId}>{site.siteName}</option>)}</select></label> : null}<nav className="view-switch" aria-label="Reviewer views"><button className={view === 'INBOX' ? 'active' : ''} onClick={() => setView('INBOX')} disabled={!activeSite}>Inbox</button><button className={view === 'DELTA' ? 'active' : ''} onClick={() => setView('DELTA')} disabled={!activeSite}>Delta</button></nav>{activeAccess?.role === 'ORG_ADMIN' ? <a className="button secondary compact" href="/operator">Operator</a> : null}<button className="text-button reviewer-signout" aria-label="Sign out" onClick={() => void logoutReviewer()}>Exit</button></header>
     <main>
       {!context ? <section className="membership-accept"><h1>Join your ChallanSe team</h1><p>Enter the one-time code supplied by your organization administrator.</p><label>Invitation code<input value={invitationCode} onChange={(event) => setInvitationCode(event.target.value)} autoComplete="one-time-code" /></label><button className="button primary" disabled={busy || invitationCode.trim().length < 16} onClick={() => void acceptInvitation()}>Accept invitation</button></section> : null}
       {context && !activeSite ? <div className="notice" role="status"><strong>Choose a site to continue.</strong><span>Your access is limited to the sites listed above.</span></div> : null}
       {view === 'DELTA' ? <DeltaView /> : <>
-      <section className="inbox-header"><div><h1>{title}</h1><p>Review the image, correct the receipt details, and make one clear decision.</p></div><button className="icon-button refresh" onClick={() => void load(false)} aria-label="Refresh inbox">↻</button></section>
+      <section className="inbox-header"><div><h1>{title}</h1><p>Check the image and confirm the highlighted fields.</p></div><button className="icon-button refresh" onClick={() => void load(false)} aria-label="Refresh inbox">↻</button></section>
       <nav className="filters" aria-label="Receipt status">{filters.map((filter) => <button key={filter.value} className={status === filter.value ? 'active' : ''} onClick={() => setStatus(filter.value)}>{filter.label}</button>)}</nav>
       {message ? <div className="notice error" role="alert">{message}<button onClick={() => void load(false)}>Retry</button></div> : null}
       {busy && receipts.length === 0 ? <div className="empty">Loading receipts…</div> : null}
       {!busy && receipts.length === 0 && !message ? <div className="empty"><strong>Nothing waiting here.</strong><span>New site receipts will appear automatically.</span></div> : null}
-      <div className="receipt-list">{receipts.map((receipt) => <ReceiptCard key={receipt.id} receipt={receipt} onSaved={() => void load(false)} />)}</div>
+      <div className="receipt-list">{receipts.map((receipt) => <ReceiptCard key={receipt.id} receipt={receipt} purchaseOrders={purchaseOrders} onSaved={() => void load(false)} />)}</div>
       {nextCursor ? <button className="button secondary load-more" onClick={() => void load(true)} disabled={busy}>Load more</button> : null}
       </>}
     </main>
-    {adminOpen && activeAccess ? <AdminPanel role={activeAccess.role} onClose={() => setAdminOpen(false)} /> : null}
   </div>;
 }
 
 export default function App() {
-  return window.location.pathname.startsWith('/operator') ? <OperatorApp /> : <ReviewerApp />;
+  return window.location.pathname.startsWith('/operator') ? <OperatorApp AdministrationPanel={AdminPanel} /> : <ReviewerApp />;
 }
