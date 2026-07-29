@@ -25,9 +25,12 @@ from app.authoritative import (
     accept_membership_invitation,
     complete_upload_session,
     consume_device_nonce,
+    create_manual_invoice,
     create_membership_invitation,
     create_upload_session,
+    list_receipts,
     put_upload_part,
+    receipt_image,
     update_organization_quota,
     upsert_membership,
     upsert_site,
@@ -67,6 +70,7 @@ from app.reconciliation import (
 )
 from app.schemas import (
     GstReceiptContext,
+    ManualInvoiceRequest,
     MembershipAdminRequest,
     MembershipInvitationAcceptance,
     MembershipInvitationRequest,
@@ -761,6 +765,120 @@ def test_membership_invitation_binds_access_identity_once() -> None:
             "SELECT COUNT(*) FROM site_memberships WHERE organization_id = %s AND site_id = %s AND role = 'REVIEWER' AND active",
             (ORGANIZATION_ID, SITE_ID),
         ).fetchone()[0] == 1
+
+
+@pytest.mark.integration
+def test_manual_invoice_is_immediately_reviewable_without_image_or_enrichment() -> None:
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("TEST_DATABASE_URL is not configured")
+    reset_test_database(database_url)
+    issuer = "https://identity.example.com"
+    subject = "admin-subject"
+    bootstrap_tenant(
+        Settings(ENVIRONMENT="production", DATABASE_ADMIN_URL=database_url),
+        TenantBootstrap(
+            organization_id=UUID(ORGANIZATION_ID), organization_slug="client-one", organization_name="Client One",
+            site_id=UUID(SITE_ID), site_name="Main Site", allowed_wifi_ssids=["Site Office"],
+            reviewer_issuer=issuer, reviewer_subject=subject, reviewer_email="admin@client.example",
+            reviewer_display_name="Client Admin",
+            vendors=[BootstrapVendor(id="vendor-1", name="Vendor One", initials="V1", color="#0F766E")],
+            confirmation=f"BOOTSTRAP {ORGANIZATION_ID}",
+        ),
+    )
+    with psycopg.connect(database_url, row_factory=psycopg.rows.dict_row) as connection:
+        user_id = connection.execute(
+            "SELECT user_id FROM identity_links WHERE issuer = %s AND subject = %s",
+            (issuer, subject),
+        ).fetchone()["user_id"]
+    settings = Settings(
+        DATABASE_URL=database_url,
+        SYSTEM_DATABASE_URL=database_url,
+        EDGE_TO_ENRICHMENT_HMAC_KEY_ID=HMAC_KEY_ID,
+        EDGE_TO_ENRICHMENT_HMAC_KEY=HMAC_SECRET,
+    )
+    reviewer = ReviewerContext(
+        user_id=UUID(str(user_id)), organization_id=UUID(ORGANIZATION_ID), site_id=UUID(SITE_ID),
+        role="ORG_ADMIN", email="admin@client.example", issuer=issuer, subject=subject,
+    )
+    request = ManualInvoiceRequest.model_validate({
+        "vendorId": "vendor-1",
+        "challanNumber": "CH-MANUAL-1",
+        "poNumber": "PO-1",
+        "materialCode": "CEM",
+        "materialDescription": "OPC Cement",
+        "quantity": 25,
+        "unit": "BAG",
+        "notes": "Gate register entry",
+    })
+
+    path = "/v1/reviewer/invoices"
+    body = json.dumps(request.model_dump(mode="json", by_alias=True)).encode()
+    headers = signed_headers(body, path=path)
+    headers.update({
+        "X-ChallanSe-OIDC-Issuer": issuer,
+        "X-ChallanSe-OIDC-Subject": subject,
+        "X-ChallanSe-OIDC-Email": reviewer.email,
+        "X-ChallanSe-Site-Id": SITE_ID,
+    })
+    app.dependency_overrides[get_settings] = lambda: settings
+    try:
+        response = TestClient(app).post(path, content=body, headers=headers)
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+    assert response.status_code == 200
+    result = response.json()
+    receipt_id = UUID(str(result["receiptId"]))
+
+    assert result["status"] == "NEEDS_REVIEW"
+    receipts = list_receipts(settings, reviewer)
+    assert len(receipts) == 1
+    assert receipts[0]["id"] == str(receipt_id)
+    assert receipts[0]["imageUrl"] is None
+    assert receipts[0]["enrichmentStatus"] == "MANUAL"
+    assert receipts[0]["integrityStatus"] == "UNAVAILABLE"
+    with pytest.raises(AuthoritativeError) as image_error:
+        receipt_image(settings, reviewer, receipt_id)
+    assert image_error.value.status_code == 404
+    assert image_error.value.code == "IMAGE_NOT_FOUND"
+    with pytest.raises(AuthoritativeError, match="VENDOR_NOT_FOUND"):
+        create_manual_invoice(
+            settings,
+            reviewer,
+            request.model_copy(update={"vendor_id": "vendor-missing"}),
+        )
+
+    with tenant_connection(database_url, ORGANIZATION_ID, row_factory=psycopg.rows.dict_row) as connection:
+        evidence = connection.execute(
+            """
+            SELECT
+              r.source, r.status, r.enrichment_status, r.gst_status, r.integrity_status,
+              r.device_id, r.image_key, r.image_bytes, r.image_sha256,
+              r.app_version, r.configuration_version,
+              (SELECT COUNT(*) FROM audit_events
+               WHERE receipt_id = r.id AND event_type = 'INVOICE_CREATED' AND actor_id = %s) AS audit_events,
+              (SELECT COUNT(*) FROM transactional_outbox WHERE aggregate_id = r.id) AS outbox_events
+            FROM receipts r
+            WHERE r.id = %s
+            """,
+            (str(reviewer.user_id), receipt_id),
+        ).fetchone()
+    assert evidence == {
+        "source": "MANUAL",
+        "status": "NEEDS_REVIEW",
+        "enrichment_status": "MANUAL",
+        "gst_status": "DISABLED",
+        "integrity_status": "UNAVAILABLE",
+        "device_id": None,
+        "image_key": None,
+        "image_bytes": None,
+        "image_sha256": None,
+        "app_version": None,
+        "configuration_version": None,
+        "audit_events": 1,
+        "outbox_events": 0,
+    }
 
 
 @pytest.mark.integration

@@ -4,6 +4,10 @@ import { expect, test, type Page } from '@playwright/test';
 const context = {
   user: { id: 'admin-1', email: 'admin@synthetic.invalid' },
   sites: [{ organizationId: 'org-1', siteId: 'site-1', siteName: 'Synthetic Site', role: 'ORG_ADMIN' }],
+  vendors: [{
+    id: 'vendor-1', siteId: 'site-1', name: 'Synthetic Cement',
+    initials: 'SC', color: '#f7b51b',
+  }],
   providers: { OCR: 'ACTIVE', GST: 'DISABLED', CREDIT: 'DISABLED' },
 };
 
@@ -107,6 +111,14 @@ test('operator run persists across refresh and rejects a duplicate', async ({ pa
 });
 
 test('reviewer inbox and delta retain focused workflows', async ({ page }) => {
+  let receiptItems = [{
+    id: 'receipt-1', vendorId: 'vendor-1', vendorName: 'Synthetic Cement', capturedAtUnix: 1784764800,
+    capturedQuantity: 25, verifiedQuantity: null, challanNumber: 'CH-1001', poNumber: 'PO-SYN-001',
+    materialCode: 'CEMENT-OPC', materialDescription: 'OPC Cement', unit: 'BAG', notes: '',
+    status: 'NEEDS_REVIEW', version: 1, imageUrl: '/v1/reviewer/receipts/receipt-1/image',
+    enrichmentStatus: 'READY_FOR_REVIEW', gstStatus: 'DISABLED', integrityStatus: 'UNAVAILABLE',
+    ocrConfidence: 92.5, rawOcrJson: { synthetic: true, text: 'REDACTED TEST VALUE' },
+  }];
   await page.route('**/api/v1/reviewer/context', (route) => route.fulfill({ json: context }));
   await page.route('**/api/v1/reviewer/receipts/receipt-1/image', (route) => route.fulfill({
     contentType: 'image/svg+xml',
@@ -132,16 +144,31 @@ test('reviewer inbox and delta retain focused workflows', async ({ page }) => {
   }));
   await page.route('**/api/v1/reviewer/receipts?*', (route) => route.fulfill({
     json: {
-      receipts: [{
-        id: 'receipt-1', vendorName: 'Synthetic Cement', capturedAtUnix: 1784764800,
-        capturedQuantity: 25, verifiedQuantity: null, challanNumber: 'CH-1001', poNumber: 'PO-SYN-001',
-        materialCode: 'CEMENT-OPC', materialDescription: 'OPC Cement', unit: 'BAG', notes: '',
-        status: 'NEEDS_REVIEW', version: 1, imageUrl: '/v1/reviewer/receipts/receipt-1/image',
-        ocrConfidence: 92.5, rawOcrJson: { synthetic: true, text: 'REDACTED TEST VALUE' },
-      }],
+      receipts: receiptItems,
       nextCursor: null,
     },
   }));
+  await page.route('**/api/v1/reviewer/invoices', async (route) => {
+    expect(route.request().method()).toBe('POST');
+    expect(route.request().postDataJSON()).toEqual({
+      vendorId: 'vendor-1',
+      challanNumber: 'CH-MANUAL-1',
+      poNumber: 'PO-SYN-001',
+      materialCode: 'CEMENT-OPC',
+      materialDescription: 'CEMENT-OPC',
+      quantity: 30,
+      unit: 'BAG',
+      notes: '',
+    });
+    receiptItems = [{
+      id: 'manual-receipt-1', vendorId: 'vendor-1', vendorName: 'Synthetic Cement', capturedAtUnix: 1784764900,
+      capturedQuantity: 30, verifiedQuantity: null, challanNumber: 'CH-MANUAL-1', poNumber: 'PO-SYN-001',
+      materialCode: 'CEMENT-OPC', materialDescription: 'CEMENT-OPC', unit: 'BAG', notes: '',
+      status: 'NEEDS_REVIEW', version: 1, imageUrl: null, enrichmentStatus: 'MANUAL',
+      gstStatus: 'DISABLED', integrityStatus: 'UNAVAILABLE', ocrConfidence: null, rawOcrJson: {},
+    }];
+    await route.fulfill({ json: { receiptId: 'manual-receipt-1', status: 'NEEDS_REVIEW' } });
+  });
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Needs review' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Site setup' })).toHaveCount(0);
@@ -176,6 +203,18 @@ test('reviewer inbox and delta retain focused workflows', async ({ page }) => {
     fullPage: true,
     maxDiffPixelRatio: 0.001,
   });
+  await page.getByRole('button', { name: 'Create invoice', exact: true }).click();
+  const invoiceDialog = page.getByRole('dialog', { name: 'Create invoice' });
+  await expect(invoiceDialog).toBeVisible();
+  await expect(invoiceDialog.getByLabel('Vendor', { exact: true })).toHaveValue('vendor-1');
+  await invoiceDialog.getByLabel('PO number', { exact: true }).selectOption('PO-SYN-001');
+  await expect(invoiceDialog.getByLabel('Material', { exact: true })).toHaveValue('CEMENT-OPC');
+  await expect(invoiceDialog.getByLabel('Unit', { exact: true })).toHaveValue('BAG');
+  await invoiceDialog.getByLabel('Quantity', { exact: true }).fill('30');
+  await invoiceDialog.getByLabel('Challan number', { exact: true }).fill('CH-MANUAL-1');
+  await invoiceDialog.getByRole('button', { name: 'Create invoice', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('Invoice created and added to Needs review.');
+  await expect(page.getByText('Manual invoice')).toBeVisible();
   await poSelect.selectOption('PO-SYN-002');
   await expect(page.getByRole('combobox', { name: 'Material' })).toHaveValue('STEEL-TMT');
   await expect(page.getByRole('combobox', { name: 'Unit' })).toHaveValue('KG');

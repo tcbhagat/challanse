@@ -34,6 +34,7 @@ from .authoritative import (
     complete_upload_session,
     consume_device_nonce,
     create_enrollment_code,
+    create_manual_invoice,
     create_membership_invitation,
     create_upload_session,
     enroll_device,
@@ -54,6 +55,7 @@ from .authoritative import (
 )
 from .schemas import (
     EnrollmentRequest,
+    ManualInvoiceRequest,
     MembershipAdminRequest,
     MembershipInvitationAcceptance,
     MembershipInvitationRequest,
@@ -571,6 +573,18 @@ async def authoritative_reviewer_context(request: Request, settings=Depends(get_
             request.headers.get("X-ChallanSe-OIDC-Subject", ""),
             request.headers.get("X-ChallanSe-OIDC-Email", ""),
         )
+    except AuthoritativeError as error:
+        raise _authoritative_failure(error) from error
+
+
+@app.post("/v1/reviewer/invoices")
+async def manual_invoice_create(request: Request, settings=Depends(get_settings)) -> dict[str, object]:
+    raw = await _verify_internal_request(request, settings)
+    try:
+        reviewer = _reviewer_from_headers(request, settings)
+        return create_manual_invoice(settings, reviewer, ManualInvoiceRequest.model_validate_json(raw))
+    except ValidationError as error:
+        raise HTTPException(status_code=422, detail="INVALID_INVOICE_DATA") from error
     except AuthoritativeError as error:
         raise _authoritative_failure(error) from error
 

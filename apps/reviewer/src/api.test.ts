@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { API_BASE_URL, PUBLIC_API_URL, createLocalTestRun, logoutReviewer, reviewReceipt } from './api';
+import { API_BASE_URL, PUBLIC_API_URL, createLocalTestRun, createManualInvoice, logoutReviewer, reviewReceipt } from './api';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -64,6 +64,33 @@ describe('reviewer API request protection', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/reviewer/receipts/receipt-1', expect.objectContaining({
       credentials: 'include',
       headers: expect.objectContaining({ 'X-CSRF-Token': 'test-csrf-token' }),
+    }));
+  });
+
+  it('creates a manual invoice through the same-origin reviewer route', async () => {
+    vi.stubGlobal('document', { cookie: 'challanse_local_csrf=invoice-csrf-token' });
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ receiptId: 'receipt-2', status: 'NEEDS_REVIEW' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createManualInvoice({
+      vendorId: 'vendor-1',
+      challanNumber: 'CH-2',
+      poNumber: 'PO-1',
+      materialCode: 'CEM',
+      materialDescription: 'Cement',
+      quantity: 25,
+      unit: 'BAG',
+      notes: '',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/reviewer/invoices', expect.objectContaining({
+      method: 'POST',
+      credentials: 'include',
+      headers: expect.objectContaining({ 'X-CSRF-Token': 'invoice-csrf-token' }),
     }));
   });
 });

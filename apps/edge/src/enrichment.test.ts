@@ -87,6 +87,43 @@ describe('stateless authoritative proxy', () => {
     expect(headers.get('X-ChallanSe-Site-Id')).toBe('22222222-2222-4222-8222-222222222222');
   });
 
+  it('forwards manual invoice mutations through the authenticated reviewer proxy', async () => {
+    const env = fakeEnv();
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ receiptId: 'receipt-2', status: 'NEEDS_REVIEW' }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+    const body = JSON.stringify({
+      vendorId: 'vendor-1',
+      challanNumber: 'CH-2',
+      poNumber: 'PO-1',
+      materialCode: 'CEM',
+      materialDescription: 'Cement',
+      quantity: 25,
+      unit: 'BAG',
+      notes: '',
+    });
+    await proxyAuthoritativeRequest(
+      new Request('https://api.challanse.constrovet.com/v1/reviewer/invoices', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-ChallanSe-Site-Id': '22222222-2222-4222-8222-222222222222',
+        },
+        body,
+      }),
+      env,
+      { issuer: 'https://constrovet.cloudflareaccess.com', subject: 'subject', email: 'reviewer@example.com' },
+    );
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = new Headers(init.headers);
+    expect(url).toBe('https://enrichment.example/v1/reviewer/invoices');
+    expect(init.method).toBe('POST');
+    expect(new TextDecoder().decode(init.body as ArrayBuffer)).toBe(body);
+    expect(headers.get('X-ChallanSe-OIDC-Subject')).toBe('subject');
+  });
+
   it('streams private image responses without buffering or public caching', async () => {
     const env = fakeEnv();
     const stream = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1, 2, 3])); controller.close(); } });

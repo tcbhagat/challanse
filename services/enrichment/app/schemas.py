@@ -40,6 +40,17 @@ class ReceiptReviewRequest(ApiModel):
     notes: str = Field(default="", max_length=1000)
 
 
+class ManualInvoiceRequest(ApiModel):
+    vendor_id: str = Field(alias="vendorId", min_length=1, max_length=64)
+    challan_number: str = Field(default="", alias="challanNumber", max_length=120)
+    po_number: str = Field(alias="poNumber", min_length=1, max_length=120)
+    material_code: str = Field(alias="materialCode", min_length=1, max_length=120)
+    material_description: str = Field(alias="materialDescription", min_length=1, max_length=500)
+    quantity: float = Field(gt=0, le=1_000_000_000)
+    unit: str = Field(min_length=1, max_length=24)
+    notes: str = Field(default="", max_length=1000)
+
+
 class PilotRequest(ApiModel):
     name: str = Field(min_length=2, max_length=100)
     company: str = Field(min_length=2, max_length=160)

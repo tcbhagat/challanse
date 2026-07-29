@@ -218,10 +218,22 @@ if contains_forbidden -RIn --exclude-dir='.terraform' --exclude='test-production
   exit 1
 fi
 test ! -e services/enrichment/app/cloudflare.py || { echo "Legacy Cloudflare image transport must remain absent." >&2; exit 1; }
-if contains_forbidden -RIniE 'celery|redis' services/enrichment README.md docs/hybrid-enrichment.md; then
+if contains_forbidden -RIniE \
+  --exclude-dir='.venv' \
+  --exclude-dir='venv' \
+  'celery|redis' \
+  services/enrichment README.md docs/hybrid-enrichment.md; then
   echo "Celery/Redis references must not remain in the production enrichment path or current runbooks." >&2
   exit 1
 fi
+grep -Fxq '.venv/' .gitignore || {
+  echo "Python virtual environments must remain ignored by Git." >&2
+  exit 1
+}
+grep -Fxq '**/.venv' .dockerignore || {
+  echo "Python virtual environments must remain excluded from Docker build contexts." >&2
+  exit 1
+}
 if contains_forbidden -RInE 'p95.*<.*50|toBeLessThan\(50\)' apps/mobile/__tests__; then
   echo "JavaScript tests must not claim the Android field p95 gate." >&2
   exit 1

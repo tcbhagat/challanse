@@ -7,6 +7,7 @@
 artifacts
 node_modules
 **/node_modules
+**/.venv
 **/android/.gradle
 **/android/.cxx
 **/android/build

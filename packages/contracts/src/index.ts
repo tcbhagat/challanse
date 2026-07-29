@@ -78,7 +78,7 @@ export type ReceiptListItem = {
   capturedQuantity: number;
   status: ReceiptStatus;
   version: number;
-  imageUrl: string;
+  imageUrl: string | null;
   challanNumber: string;
   poNumber: string;
   materialCode: string;

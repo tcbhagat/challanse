@@ -21,6 +21,7 @@ from .object_store import object_encryption_headers, object_store_client
 from .local_storage import local_uploads_paused
 from .schemas import (
     EnrollmentRequest,
+    ManualInvoiceRequest,
     MembershipAdminRequest,
     MembershipInvitationAcceptance,
     MembershipInvitationRequest,
@@ -685,6 +686,32 @@ def reviewer_access_context(settings: Settings, issuer: str, subject: str, email
     rows = _reviewer_access_rows(settings, issuer, subject, email)
     if not rows:
         raise AuthoritativeError("REVIEWER_UNAUTHORIZED", 401)
+    vendors: list[dict[str, Any]] = []
+    sites_by_organization: dict[UUID, list[UUID]] = {}
+    for row in rows:
+        organization_id = UUID(str(row["organization_id"]))
+        sites_by_organization.setdefault(organization_id, []).append(UUID(str(row["site_id"])))
+    for organization_id, site_ids in sites_by_organization.items():
+        with tenant_connection(settings.database_url, str(organization_id), row_factory=dict_row) as connection:
+            vendor_rows = connection.execute(
+                """
+                SELECT id, site_id, name, initials, color, display_order
+                FROM vendors
+                WHERE site_id = ANY(%s::uuid[]) AND active
+                ORDER BY site_id, display_order, name
+                """,
+                ([str(site_id) for site_id in site_ids],),
+            ).fetchall()
+        vendors.extend(
+            {
+                "id": str(vendor["id"]),
+                "siteId": str(vendor["site_id"]),
+                "name": str(vendor["name"]),
+                "initials": str(vendor["initials"]),
+                "color": str(vendor["color"]),
+            }
+            for vendor in vendor_rows
+        )
     return {
         "user": {"id": str(rows[0]["user_id"]), "email": email or str(rows[0]["email"])},
         "sites": [
@@ -696,8 +723,106 @@ def reviewer_access_context(settings: Settings, issuer: str, subject: str, email
             }
             for row in rows
         ],
+        "vendors": vendors,
         "providers": {"ocr": "ACTIVE", "gst": "DISABLED", "credit": "DISABLED", "whatsapp": "DISABLED", "slack": "DISABLED"},
     }
+
+
+def create_manual_invoice(
+    settings: Settings,
+    reviewer: ReviewerContext,
+    request: ManualInvoiceRequest,
+) -> dict[str, Any]:
+    if reviewer.role == "AUDITOR":
+        raise AuthoritativeError("INVOICE_CREATE_FORBIDDEN", 403)
+    receipt_id = uuid4()
+    captured_at_unix = int(time.time())
+    with tenant_connection(settings.database_url, str(reviewer.organization_id), row_factory=dict_row) as connection:
+        vendor = connection.execute(
+            "SELECT id FROM vendors WHERE id = %s AND site_id = %s AND active",
+            (request.vendor_id, reviewer.site_id),
+        ).fetchone()
+        if not vendor:
+            raise AuthoritativeError("VENDOR_NOT_FOUND", 404)
+        connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+            (f"receipt:{reviewer.organization_id}:{receipt_id}",),
+        )
+        connection.execute(
+            """
+            INSERT INTO receipts
+              (id, organization_id, site_id, device_id, vendor_id, captured_at_unix, captured_quantity,
+               image_key, image_bytes, image_sha256, status, enrichment_status, gst_status, integrity_status,
+               challan_number, po_number, material_code, material_description, unit, notes,
+               app_version, configuration_version, source)
+            VALUES
+              (%s, %s, %s, NULL, %s, %s, %s,
+               NULL, NULL, NULL, 'NEEDS_REVIEW', 'MANUAL', 'DISABLED', 'UNAVAILABLE',
+               %s, %s, %s, %s, %s, %s,
+               NULL, NULL, 'MANUAL')
+            """,
+            (
+                receipt_id,
+                reviewer.organization_id,
+                reviewer.site_id,
+                request.vendor_id,
+                captured_at_unix,
+                request.quantity,
+                request.challan_number,
+                request.po_number,
+                request.material_code,
+                request.material_description,
+                request.unit,
+                request.notes,
+            ),
+        )
+        event_body = {
+            "event": "INVOICE_CREATED",
+            "source": "MANUAL",
+            "vendorId": request.vendor_id,
+            "challanNumber": request.challan_number,
+            "poNumber": request.po_number,
+            "materialCode": request.material_code,
+            "materialDescription": request.material_description,
+            "quantity": request.quantity,
+            "unit": request.unit,
+            "notes": request.notes,
+        }
+        connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+            (f"audit:{reviewer.organization_id}:{reviewer.site_id}",),
+        )
+        previous = connection.execute(
+            """
+            SELECT event_hash
+            FROM audit_events
+            WHERE organization_id = %s AND site_id = %s
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (reviewer.organization_id, reviewer.site_id),
+        ).fetchone()
+        previous_hash = "" if previous is None else str(_row_value(previous, "event_hash"))
+        connection.execute(
+            """
+            INSERT INTO audit_events
+              (id, organization_id, site_id, receipt_id, event_type, actor_type, actor_id,
+               event_json, source_class, previous_hash, event_hash)
+            VALUES (%s, %s, %s, %s, 'INVOICE_CREATED', 'USER', %s, %s, 'service', %s, %s)
+            """,
+            (
+                uuid4(),
+                reviewer.organization_id,
+                reviewer.site_id,
+                receipt_id,
+                str(reviewer.user_id),
+                Jsonb(event_body),
+                previous_hash or None,
+                _audit_hash(previous_hash, event_body),
+            ),
+        )
+        connection.commit()
+    return {"receiptId": str(receipt_id), "status": "NEEDS_REVIEW"}
 
 
 def list_receipts(settings: Settings, reviewer: ReviewerContext, status: str = "NEEDS_REVIEW", limit: int = 25) -> list[dict[str, Any]]:
@@ -716,7 +841,8 @@ def list_receipts(settings: Settings, reviewer: ReviewerContext, status: str = "
             "id": str(row["id"]), "vendorId": row["vendor_id"], "vendorName": row["vendor_name"],
             "capturedAtUnix": int(row["captured_at_unix"]), "capturedQuantity": float(row["captured_quantity"]),
             "status": row["status"], "version": int(row["version"]),
-            "imageUrl": f"/v1/reviewer/receipts/{row['id']}/image", "challanNumber": row["challan_number"],
+            "imageUrl": f"/v1/reviewer/receipts/{row['id']}/image" if row["image_key"] else None,
+            "challanNumber": row["challan_number"],
             "poNumber": row["po_number"], "materialCode": row["material_code"],
             "materialDescription": row["material_description"], "verifiedQuantity": row["verified_quantity"],
             "unit": row["unit"], "notes": row["notes"], "enrichmentStatus": row["enrichment_status"],
@@ -734,7 +860,7 @@ def receipt_image(settings: Settings, reviewer: ReviewerContext, receipt_id: UUI
             "SELECT image_key, image_sha256 FROM receipts WHERE id = %s AND site_id = %s AND image_deleted_at IS NULL",
             (receipt_id, reviewer.site_id),
         ).fetchone()
-    if not row:
+    if not row or not row["image_key"] or not row["image_sha256"]:
         raise AuthoritativeError("IMAGE_NOT_FOUND", 404)
     image_key = str(row["image_key"])
     expected_prefix = f"{reviewer.organization_id}/{reviewer.site_id}/"

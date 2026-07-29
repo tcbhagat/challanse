@@ -66,6 +66,7 @@ export function listReceipts(status: string, cursor?: string) {
 export type ReviewerContext = {
   user: { id: string; email: string };
   sites: Array<{ organizationId: string; siteId: string; siteName: string; role: string }>;
+  vendors: Array<{ id: string; siteId: string; name: string; initials: string; color: string }>;
   providers: Record<string, 'ACTIVE' | 'DISABLED'>;
 };
 
@@ -100,6 +101,24 @@ export function reviewReceipt(receiptId: string, review: ReceiptReview) {
   return api<{ receiptId: string; status: string; version: number }>(`/v1/reviewer/receipts/${receiptId}`, {
     method: 'PATCH',
     body: JSON.stringify(review),
+  });
+}
+
+export type ManualInvoiceInput = {
+  vendorId: string;
+  challanNumber: string;
+  poNumber: string;
+  materialCode: string;
+  materialDescription: string;
+  quantity: number;
+  unit: string;
+  notes: string;
+};
+
+export function createManualInvoice(invoice: ManualInvoiceInput) {
+  return api<{ receiptId: string; status: string }>('/v1/reviewer/invoices', {
+    method: 'POST',
+    body: JSON.stringify(invoice),
   });
 }
 

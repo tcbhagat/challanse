@@ -7,6 +7,7 @@ import {
   ApiError,
   acceptMembershipInvitation,
   createEnrollmentCode,
+  createManualInvoice,
   createMembershipInvitation,
   downloadAuditExport,
   getActiveSiteId,
@@ -25,6 +26,7 @@ import {
   setActiveSiteId,
   type AdminConfiguration,
   type AdminSummary,
+  type ManualInvoiceInput,
   type ReviewerContext,
 } from './api';
 import OperatorApp from './OperatorApp';
@@ -155,7 +157,9 @@ function ReceiptCard({
   return (
     <article className="receipt-card">
       <div className="receipt-media">
-        <img src={`${API_BASE_URL}${receipt.imageUrl}`} alt={`Challan from ${receipt.vendorName}`} loading="lazy" />
+        {receipt.imageUrl
+          ? <img src={`${API_BASE_URL}${receipt.imageUrl}`} alt={`Challan from ${receipt.vendorName}`} loading="lazy" />
+          : <div className="receipt-no-image"><span aria-hidden="true">＋</span><strong>Manual invoice</strong></div>}
         <span className={`status status-${receipt.status.toLowerCase()}`}>{receipt.status.replace('_', ' ')}</span>
       </div>
       <div className="receipt-context">
@@ -207,6 +211,147 @@ function ReceiptCard({
       </form>
     </article>
   );
+}
+
+function ManualInvoiceForm({
+  vendors,
+  purchaseOrders,
+  onClose,
+  onCreated,
+}: {
+  vendors: ReviewerContext['vendors'];
+  purchaseOrders: ReconciliationRow[];
+  onClose: () => void;
+  onCreated: () => Promise<void>;
+}) {
+  const poOptions = useMemo(() => uniqueOptions(purchaseOrders.map((row) => row.poNumber)), [purchaseOrders]);
+  const [vendorId, setVendorId] = useState(vendors.length === 1 ? vendors[0].id : '');
+  const [challanNumber, setChallanNumber] = useState('');
+  const [poNumber, setPoNumber] = useState(poOptions.length === 1 ? poOptions[0] : '');
+  const initialRow = purchaseOrders.find((row) => row.poNumber === (poOptions.length === 1 ? poOptions[0] : ''));
+  const [materialCode, setMaterialCode] = useState(initialRow?.materialCode || '');
+  const [materialDescription, setMaterialDescription] = useState(initialRow?.materialCode || '');
+  const [quantity, setQuantity] = useState('');
+  const [unit, setUnit] = useState(initialRow?.unit || 'UNIT');
+  const [notes, setNotes] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const materialRows = useMemo(
+    () => purchaseOrders.filter((row) => !poNumber || row.poNumber === poNumber),
+    [poNumber, purchaseOrders],
+  );
+  const materialOptions = useMemo(
+    () => uniqueOptions(materialRows.map((row) => row.materialCode)),
+    [materialRows],
+  );
+  const unitOptions = useMemo(
+    () => uniqueOptions([unit, ...materialRows.map((row) => row.unit), ...commonUnits]),
+    [materialRows, unit],
+  );
+
+  const choosePo = (nextPo: string) => {
+    setPoNumber(nextPo);
+    const rows = purchaseOrders.filter((row) => row.poNumber === nextPo);
+    if (rows.length === 1) {
+      setMaterialCode(rows[0].materialCode);
+      setMaterialDescription(rows[0].materialCode);
+      setUnit(rows[0].unit);
+    } else {
+      setMaterialCode('');
+      setMaterialDescription('');
+    }
+  };
+
+  const chooseMaterial = (nextMaterial: string) => {
+    setMaterialCode(nextMaterial);
+    setMaterialDescription(nextMaterial);
+    const row = materialRows.find((candidate) => candidate.materialCode === nextMaterial);
+    if (row) setUnit(row.unit);
+  };
+
+  const submit = async () => {
+    setBusy(true);
+    setMessage('');
+    const invoice: ManualInvoiceInput = {
+      vendorId,
+      challanNumber: challanNumber.trim(),
+      poNumber: poNumber.trim(),
+      materialCode: materialCode.trim(),
+      materialDescription: materialDescription.trim(),
+      quantity: Number(quantity),
+      unit: unit.trim(),
+      notes: notes.trim(),
+    };
+    try {
+      await createManualInvoice(invoice);
+      await onCreated();
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : 'Invoice could not be created.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const valid = Boolean(
+    vendorId && poNumber.trim() && materialCode.trim() && materialDescription.trim()
+    && Number(quantity) > 0 && unit.trim(),
+  );
+
+  return <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+    <section className="manual-invoice-panel" role="dialog" aria-modal="true" aria-labelledby="manual-invoice-title" onMouseDown={(event) => event.stopPropagation()}>
+      <header>
+        <div><p>Single entry</p><h2 id="manual-invoice-title">Create invoice</h2></div>
+        <button type="button" className="icon-button" onClick={onClose} aria-label="Close invoice form">×</button>
+      </header>
+      <form className="manual-invoice-form" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+        <label>Vendor
+          <select required aria-label="Vendor" value={vendorId} onChange={(event) => setVendorId(event.target.value)} disabled={busy}>
+            <option value="">Select vendor</option>
+            {vendors.map((vendor) => <option key={vendor.id} value={vendor.id}>{vendor.name}</option>)}
+          </select>
+        </label>
+        <label>PO number
+          {poOptions.length
+            ? <select required aria-label="PO number" value={poNumber} onChange={(event) => choosePo(event.target.value)} disabled={busy}>
+              <option value="">Select PO</option>
+              {poOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+            </select>
+            : <input required aria-label="PO number" value={poNumber} onChange={(event) => setPoNumber(event.target.value)} maxLength={120} disabled={busy} />}
+        </label>
+        <label>Material
+          {materialOptions.length
+            ? <select required aria-label="Material" value={materialCode} onChange={(event) => chooseMaterial(event.target.value)} disabled={busy}>
+              <option value="">Select material</option>
+              {materialOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+            </select>
+            : <input required aria-label="Material" value={materialCode} onChange={(event) => { setMaterialCode(event.target.value); setMaterialDescription(event.target.value); }} maxLength={120} disabled={busy} />}
+        </label>
+        <label>Quantity
+          <input required aria-label="Quantity" type="number" min="0.001" max="1000000000" step="any" inputMode="decimal" value={quantity} onChange={(event) => setQuantity(event.target.value)} disabled={busy} />
+        </label>
+        <label>Unit
+          <select required aria-label="Unit" value={unit} onChange={(event) => setUnit(event.target.value)} disabled={busy}>
+            {unitOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+          </select>
+        </label>
+        <label>Challan number <span>Optional</span>
+          <input aria-label="Challan number" value={challanNumber} onChange={(event) => setChallanNumber(event.target.value)} maxLength={120} disabled={busy} />
+        </label>
+        <details className="optional-fields wide">
+          <summary>More details</summary>
+          <div>
+            <label>Material description<input required value={materialDescription} onChange={(event) => setMaterialDescription(event.target.value)} maxLength={500} disabled={busy} /></label>
+            <label>Notes<textarea value={notes} onChange={(event) => setNotes(event.target.value)} maxLength={1000} disabled={busy} /></label>
+          </div>
+        </details>
+        {message ? <p className="form-message wide" role="alert">{message}</p> : null}
+        <div className="manual-invoice-actions wide">
+          <button type="button" className="button secondary" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="button primary" disabled={busy || !valid}>{busy ? 'Creating…' : 'Create invoice'}</button>
+        </div>
+      </form>
+    </section>
+  </div>;
 }
 
 function DeltaView() {
@@ -380,6 +525,8 @@ function ReviewerApp() {
   const [context, setContext] = useState<ReviewerContext | null>(null);
   const [activeSite, setActiveSite] = useState('');
   const [invitationCode, setInvitationCode] = useState('');
+  const [manualInvoiceOpen, setManualInvoiceOpen] = useState(false);
+  const [toast, setToast] = useState('');
 
   useEffect(() => {
     void getReviewerContext().then((result) => {
@@ -421,6 +568,7 @@ function ReviewerApp() {
   }, [activeSite]);
   const title = useMemo(() => filters.find((filter) => filter.value === status)?.label || 'Receipts', [status]);
   const activeAccess = context?.sites.find((site) => site.siteId === activeSite);
+  const siteVendors = context?.vendors.filter((vendor) => vendor.siteId === activeSite) || [];
 
   const acceptInvitation = async () => {
     setBusy(true); setMessage('');
@@ -439,7 +587,7 @@ function ReviewerApp() {
       {!context ? <section className="membership-accept"><h1>Join your ChallanSe team</h1><p>Enter the one-time code supplied by your organization administrator.</p><label>Invitation code<input value={invitationCode} onChange={(event) => setInvitationCode(event.target.value)} autoComplete="one-time-code" /></label><button className="button primary" disabled={busy || invitationCode.trim().length < 16} onClick={() => void acceptInvitation()}>Accept invitation</button></section> : null}
       {context && !activeSite ? <div className="notice" role="status"><strong>Choose a site to continue.</strong><span>Your access is limited to the sites listed above.</span></div> : null}
       {view === 'DELTA' ? <DeltaView /> : <>
-      <section className="inbox-header"><div><h1>{title}</h1><p>Check the image and confirm the highlighted fields.</p></div><button className="icon-button refresh" onClick={() => void load(false)} aria-label="Refresh inbox">↻</button></section>
+      <section className="inbox-header"><div><h1>{title}</h1><p>Check the image and confirm the highlighted fields.</p></div><div className="inbox-actions">{activeAccess?.role !== 'AUDITOR' ? <button className="button primary" onClick={() => setManualInvoiceOpen(true)} disabled={!activeSite || siteVendors.length === 0}>Create invoice</button> : null}<button className="icon-button refresh" onClick={() => void load(false)} aria-label="Refresh inbox">↻</button></div></section>
       <nav className="filters" aria-label="Receipt status">{filters.map((filter) => <button key={filter.value} className={status === filter.value ? 'active' : ''} onClick={() => setStatus(filter.value)}>{filter.label}</button>)}</nav>
       {message ? <div className="notice error" role="alert">{message}<button onClick={() => void load(false)}>Retry</button></div> : null}
       {busy && receipts.length === 0 ? <div className="empty">Loading receipts…</div> : null}
@@ -448,6 +596,18 @@ function ReviewerApp() {
       {nextCursor ? <button className="button secondary load-more" onClick={() => void load(true)} disabled={busy}>Load more</button> : null}
       </>}
     </main>
+    {manualInvoiceOpen ? <ManualInvoiceForm
+      vendors={siteVendors}
+      purchaseOrders={purchaseOrders}
+      onClose={() => setManualInvoiceOpen(false)}
+      onCreated={async () => {
+        setManualInvoiceOpen(false);
+        setStatus('NEEDS_REVIEW');
+        setToast('Invoice created and added to Needs review.');
+        await load(false);
+      }}
+    /> : null}
+    {toast ? <div className="toast" role="status">{toast}<button onClick={() => setToast('')} aria-label="Dismiss message">×</button></div> : null}
   </div>;
 }
 
