@@ -51,6 +51,12 @@ class ManualInvoiceRequest(ApiModel):
     notes: str = Field(default="", max_length=1000)
 
 
+class ReviewerImageInvoiceRequest(ApiModel):
+    vendor_id: str = Field(alias="vendorId", min_length=1, max_length=64)
+    quantity: float = Field(gt=0, le=1_000_000_000)
+    unit: str = Field(min_length=1, max_length=24)
+
+
 class PilotRequest(ApiModel):
     name: str = Field(min_length=2, max_length=100)
     company: str = Field(min_length=2, max_length=160)

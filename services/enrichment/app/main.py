@@ -35,6 +35,7 @@ from .authoritative import (
     consume_device_nonce,
     create_enrollment_code,
     create_manual_invoice,
+    create_reviewer_image_invoice,
     create_membership_invitation,
     create_upload_session,
     enroll_device,
@@ -62,6 +63,7 @@ from .schemas import (
     PilotRequest,
     QuotaAdminRequest,
     ReceiptReviewRequest,
+    ReviewerImageInvoiceRequest,
     RevokeAllDevicesRequest,
     SiteAdminRequest,
     UploadSessionRequest,
@@ -124,6 +126,7 @@ async def _csp_middleware(request: Request, call_next):
 
 FastAPIInstrumentor.instrument_app(app, excluded_urls="health,ready")
 MAX_INTERNAL_REQUEST_BYTES = 1_100_000
+MAX_REVIEWER_IMAGE_BYTES = 10_000_000
 
 
 class LocalDiagnosticRequest(BaseModel):
@@ -138,19 +141,19 @@ def get_ingress_store_dependency(settings=Depends(get_settings)) -> IngressStore
     return get_ingress_store(settings.database_url)
 
 
-async def _limited_body(request: Request) -> bytes:
+async def _limited_body(request: Request, max_bytes: int = MAX_INTERNAL_REQUEST_BYTES) -> bytes:
     chunks: list[bytes] = []
     size = 0
     async for chunk in request.stream():
         size += len(chunk)
-        if size > MAX_INTERNAL_REQUEST_BYTES:
+        if size > max_bytes:
             raise HTTPException(status_code=413, detail="request_too_large")
         chunks.append(chunk)
     return b"".join(chunks)
 
 
-async def _verify_internal_request(request: Request, settings) -> bytes:
-    raw = await _limited_body(request)
+async def _verify_internal_request(request: Request, settings, max_bytes: int = MAX_INTERNAL_REQUEST_BYTES) -> bytes:
+    raw = await _limited_body(request, max_bytes)
     if settings.environment == "production" and not verify_access_service_token(
         settings.cloudflare_access_client_id,
         settings.cloudflare_access_client_secret,
@@ -612,6 +615,32 @@ async def manual_invoice_create(request: Request, settings=Depends(get_settings)
     try:
         reviewer = _reviewer_from_headers(request, settings)
         return create_manual_invoice(settings, reviewer, ManualInvoiceRequest.model_validate_json(raw))
+    except ValidationError as error:
+        raise HTTPException(status_code=422, detail="INVALID_INVOICE_DATA") from error
+    except AuthoritativeError as error:
+        raise _authoritative_failure(error) from error
+
+
+@app.post("/v1/reviewer/invoice-images", status_code=status.HTTP_202_ACCEPTED)
+async def reviewer_invoice_image_create(request: Request, settings=Depends(get_settings)) -> dict[str, object]:
+    content_length = request.headers.get("Content-Length", "")
+    if content_length.isdigit() and int(content_length) > 10_000_000:
+        raise HTTPException(status_code=413, detail="INVALID_IMAGE_SIZE")
+    raw = await _verify_internal_request(request, settings, MAX_REVIEWER_IMAGE_BYTES)
+    try:
+        reviewer = _reviewer_from_headers(request, settings)
+        metadata = ReviewerImageInvoiceRequest.model_validate({
+            "vendorId": request.headers.get("X-ChallanSe-Vendor-Id", ""),
+            "quantity": request.headers.get("X-ChallanSe-Quantity", ""),
+            "unit": request.headers.get("X-ChallanSe-Unit", ""),
+        })
+        return create_reviewer_image_invoice(
+            settings,
+            reviewer,
+            metadata,
+            raw,
+            request.headers.get("Content-Type", "").split(";", 1)[0].lower(),
+        )
     except ValidationError as error:
         raise HTTPException(status_code=422, detail="INVALID_INVOICE_DATA") from error
     except AuthoritativeError as error:

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { API_BASE_URL, PUBLIC_API_URL, createLocalTestRun, createManualInvoice, logoutReviewer, reviewReceipt } from './api';
+import { API_BASE_URL, PUBLIC_API_URL, createLocalTestRun, createManualInvoice, logoutReviewer, reviewReceipt, uploadInvoiceImage } from './api';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -91,6 +91,32 @@ describe('reviewer API request protection', () => {
       method: 'POST',
       credentials: 'include',
       headers: expect.objectContaining({ 'X-CSRF-Token': 'invoice-csrf-token' }),
+    }));
+  });
+
+  it('uploads an invoice image with reviewer scope and essential metadata', async () => {
+    vi.stubGlobal('document', { cookie: 'challanse_local_csrf=image-csrf-token' });
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 202,
+      json: async () => ({ receiptId: 'receipt-3', status: 'RECEIVED' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const file = new File(['image-bytes'], 'invoice.webp', { type: 'image/webp' });
+
+    await uploadInvoiceImage(file, 'vendor-1', 25, 'BAG');
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/reviewer/invoice-images', expect.objectContaining({
+      method: 'POST',
+      credentials: 'include',
+      body: file,
+      headers: expect.objectContaining({
+        'Content-Type': 'image/webp',
+        'X-ChallanSe-Vendor-Id': 'vendor-1',
+        'X-ChallanSe-Quantity': '25',
+        'X-ChallanSe-Unit': 'BAG',
+        'X-CSRF-Token': 'image-csrf-token',
+      }),
     }));
   });
 });

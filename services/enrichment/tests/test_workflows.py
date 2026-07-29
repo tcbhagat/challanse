@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
+from app import main as main_module
 from app import outbox as outbox_module
 from app.config import Settings, get_settings
 from app.authoritative import (
@@ -26,6 +27,7 @@ from app.authoritative import (
     complete_upload_session,
     consume_device_nonce,
     create_manual_invoice,
+    create_reviewer_image_invoice,
     create_membership_invitation,
     create_upload_session,
     list_receipts,
@@ -76,6 +78,7 @@ from app.schemas import (
     MembershipInvitationRequest,
     QuotaAdminRequest,
     ReceiptEvent,
+    ReviewerImageInvoiceRequest,
     SiteAdminRequest,
     TelemetryBatch,
     UploadSessionRequest,
@@ -879,6 +882,161 @@ def test_manual_invoice_is_immediately_reviewable_without_image_or_enrichment() 
         "audit_events": 1,
         "outbox_events": 0,
     }
+
+
+def test_reviewer_image_invoice_rejects_invalid_images_before_storage() -> None:
+    reviewer = ReviewerContext(
+        user_id=uuid4(),
+        organization_id=UUID(ORGANIZATION_ID),
+        site_id=UUID(SITE_ID),
+        role="REVIEWER",
+        email="reviewer@example.com",
+        issuer="https://identity.example.com",
+        subject="reviewer-subject",
+    )
+    request = ReviewerImageInvoiceRequest.model_validate({
+        "vendorId": "vendor-1",
+        "quantity": 25,
+        "unit": "BAG",
+    })
+    with pytest.raises(AuthoritativeError, match="INVALID_IMAGE"):
+        create_reviewer_image_invoice(Settings(), reviewer, request, b"not-an-image", "image/webp")
+
+
+def test_reviewer_image_route_passes_binary_and_allowlisted_metadata(monkeypatch) -> None:
+    image = BytesIO()
+    Image.new("RGB", (300, 300), "white").save(image, format="WEBP")
+    body = image.getvalue()
+    path = "/v1/reviewer/invoice-images"
+    headers = signed_headers(body, path=path)
+    headers.update({
+        "Content-Type": "image/webp",
+        "X-ChallanSe-OIDC-Issuer": "https://identity.example.com",
+        "X-ChallanSe-OIDC-Subject": "reviewer-subject",
+        "X-ChallanSe-OIDC-Email": "reviewer@example.com",
+        "X-ChallanSe-Site-Id": SITE_ID,
+        "X-ChallanSe-Vendor-Id": "vendor-1",
+        "X-ChallanSe-Quantity": "25",
+        "X-ChallanSe-Unit": "BAG",
+    })
+    settings = Settings(
+        EDGE_TO_ENRICHMENT_HMAC_KEY_ID=HMAC_KEY_ID,
+        EDGE_TO_ENRICHMENT_HMAC_KEY=HMAC_SECRET,
+    )
+    reviewer = ReviewerContext(
+        user_id=uuid4(),
+        organization_id=UUID(ORGANIZATION_ID),
+        site_id=UUID(SITE_ID),
+        role="REVIEWER",
+        email="reviewer@example.com",
+        issuer="https://identity.example.com",
+        subject="reviewer-subject",
+    )
+    monkeypatch.setattr(main_module, "_reviewer_from_headers", lambda request, settings: reviewer)
+
+    def capture(settings, actual_reviewer, metadata, actual_body, content_type):
+        assert actual_reviewer == reviewer
+        assert metadata.vendor_id == "vendor-1"
+        assert metadata.quantity == 25
+        assert metadata.unit == "BAG"
+        assert actual_body == body
+        assert content_type == "image/webp"
+        return {"receiptId": str(uuid4()), "status": "RECEIVED"}
+
+    monkeypatch.setattr(main_module, "create_reviewer_image_invoice", capture)
+    app.dependency_overrides[get_settings] = lambda: settings
+    try:
+        response = TestClient(app).post(path, content=body, headers=headers)
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+    assert response.status_code == 202
+    assert response.json()["status"] == "RECEIVED"
+
+
+@pytest.mark.integration
+def test_reviewer_image_invoice_persists_private_webp_and_enrichment_event() -> None:
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("TEST_DATABASE_URL is not configured")
+    reset_test_database(database_url)
+    issuer = "https://identity.example.com"
+    subject = "admin-subject"
+    bootstrap_tenant(
+        Settings(ENVIRONMENT="production", DATABASE_ADMIN_URL=database_url),
+        TenantBootstrap(
+            organization_id=UUID(ORGANIZATION_ID), organization_slug="client-one", organization_name="Client One",
+            site_id=UUID(SITE_ID), site_name="Main Site", allowed_wifi_ssids=["Site Office"],
+            reviewer_issuer=issuer, reviewer_subject=subject, reviewer_email="admin@client.example",
+            reviewer_display_name="Client Admin",
+            vendors=[BootstrapVendor(id="vendor-1", name="Vendor One", initials="V1", color="#0F766E")],
+            confirmation=f"BOOTSTRAP {ORGANIZATION_ID}",
+        ),
+    )
+    with psycopg.connect(database_url, row_factory=psycopg.rows.dict_row) as connection:
+        user_id = connection.execute(
+            "SELECT user_id FROM identity_links WHERE issuer = %s AND subject = %s",
+            (issuer, subject),
+        ).fetchone()["user_id"]
+    reviewer = ReviewerContext(
+        user_id=UUID(str(user_id)),
+        organization_id=UUID(ORGANIZATION_ID),
+        site_id=UUID(SITE_ID),
+        role="ORG_ADMIN",
+        email="admin@client.example",
+        issuer=issuer,
+        subject=subject,
+    )
+    settings = Settings(DATABASE_URL=database_url, RECEIPT_BUCKET="receipts")
+    image = BytesIO()
+    Image.new("RGB", (640, 900), "white").save(image, format="PNG")
+
+    class FakeS3:
+        def __init__(self):
+            self.objects: dict[str, bytes] = {}
+
+        def put_object(self, **kwargs):
+            self.objects[str(kwargs["Key"])] = bytes(kwargs["Body"])
+
+        def get_object(self, **kwargs):
+            return {"Body": BytesIO(self.objects[str(kwargs["Key"])])}
+
+    s3 = FakeS3()
+    result = create_reviewer_image_invoice(
+        settings,
+        reviewer,
+        ReviewerImageInvoiceRequest.model_validate({
+            "vendorId": "vendor-1",
+            "quantity": 25,
+            "unit": "BAG",
+        }),
+        image.getvalue(),
+        "image/png",
+        s3,
+    )
+    receipt_id = UUID(result["receiptId"])
+    assert result["status"] == "RECEIVED"
+    assert next(iter(s3.objects.values()))[:4] == b"RIFF"
+    with tenant_connection(database_url, ORGANIZATION_ID, row_factory=psycopg.rows.dict_row) as connection:
+        evidence = connection.execute(
+            """
+            SELECT r.source, r.status, r.enrichment_status, r.device_id, r.image_key, r.image_bytes,
+                   (SELECT COUNT(*) FROM audit_events
+                    WHERE receipt_id = r.id AND event_type = 'INVOICE_IMAGE_UPLOADED') AS audit_events,
+                   (SELECT COUNT(*) FROM transactional_outbox
+                    WHERE aggregate_id = r.id AND event_type = 'RECEIPT_ENRICHMENT_QUEUE') AS outbox_events
+            FROM receipts r WHERE r.id = %s
+            """,
+            (receipt_id,),
+        ).fetchone()
+    assert evidence["source"] == "IMAGE_UPLOAD"
+    assert evidence["status"] == "RECEIVED"
+    assert evidence["enrichment_status"] == "PENDING"
+    assert evidence["device_id"] is None
+    assert str(evidence["image_key"]).endswith(f"/{receipt_id}.webp")
+    assert evidence["image_bytes"] > 0
+    assert evidence["audit_events"] == 1
+    assert evidence["outbox_events"] == 1
 
 
 @pytest.mark.integration

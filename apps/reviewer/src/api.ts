@@ -122,6 +122,19 @@ export function createManualInvoice(invoice: ManualInvoiceInput) {
   });
 }
 
+export function uploadInvoiceImage(file: File, vendorId: string, quantity: number, unit: string) {
+  return api<{ receiptId: string; status: string }>('/v1/reviewer/invoice-images', {
+    method: 'POST',
+    headers: {
+      'Content-Type': file.type,
+      'X-ChallanSe-Vendor-Id': vendorId,
+      'X-ChallanSe-Quantity': String(quantity),
+      'X-ChallanSe-Unit': unit,
+    },
+    body: file,
+  });
+}
+
 export function createEnrollmentCode(deviceName: string) {
   return api<{ enrollmentCode: string; expiresInSeconds: number; deviceName: string }>('/v1/admin/enrollment-codes', {
     method: 'POST',

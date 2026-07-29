@@ -169,6 +169,13 @@ test('reviewer inbox and delta retain focused workflows', async ({ page }) => {
     }];
     await route.fulfill({ json: { receiptId: 'manual-receipt-1', status: 'NEEDS_REVIEW' } });
   });
+  await page.route('**/api/v1/reviewer/invoice-images', async (route) => {
+    expect(route.request().method()).toBe('POST');
+    expect(route.request().headers()['x-challanse-vendor-id']).toBe('vendor-1');
+    expect(route.request().headers()['x-challanse-quantity']).toBe('25');
+    expect(route.request().headers()['x-challanse-unit']).toBe('BAG');
+    await route.fulfill({ status: 202, json: { receiptId: 'uploaded-receipt-1', status: 'RECEIVED' } });
+  });
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Needs review' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Site setup' })).toHaveCount(0);
@@ -204,6 +211,9 @@ test('reviewer inbox and delta retain focused workflows', async ({ page }) => {
     maxDiffPixelRatio: 0.001,
   });
   await page.getByRole('button', { name: 'Create invoice', exact: true }).click();
+  const entryDialog = page.getByRole('dialog', { name: 'How would you like to add it?' });
+  await expect(entryDialog).toBeVisible();
+  await entryDialog.getByRole('button', { name: /Enter details/ }).click();
   const invoiceDialog = page.getByRole('dialog', { name: 'Create invoice' });
   await expect(invoiceDialog).toBeVisible();
   await expect(invoiceDialog.getByLabel('Vendor', { exact: true })).toHaveValue('vendor-1');
@@ -215,6 +225,18 @@ test('reviewer inbox and delta retain focused workflows', async ({ page }) => {
   await invoiceDialog.getByRole('button', { name: 'Create invoice', exact: true }).click();
   await expect(page.getByRole('status')).toContainText('Invoice created and added to Needs review.');
   await expect(page.getByText('Manual invoice')).toBeVisible();
+  await page.getByRole('button', { name: 'Create invoice', exact: true }).click();
+  await page.getByRole('dialog', { name: 'How would you like to add it?' }).getByRole('button', { name: /Upload invoice/ }).click();
+  const uploadDialog = page.getByRole('dialog', { name: 'Upload invoice' });
+  await uploadDialog.locator('input[type="file"]').setInputFiles({
+    name: 'invoice.webp',
+    mimeType: 'image/webp',
+    buffer: Buffer.from('synthetic-image'),
+  });
+  await uploadDialog.getByLabel('Quantity').fill('25');
+  await uploadDialog.getByLabel('Unit').selectOption('BAG');
+  await uploadDialog.getByRole('button', { name: 'Upload invoice', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('Invoice uploaded.');
   await poSelect.selectOption('PO-SYN-002');
   await expect(page.getByRole('combobox', { name: 'Material' })).toHaveValue('STEEL-TMT');
   await expect(page.getByRole('combobox', { name: 'Unit' })).toHaveValue('KG');

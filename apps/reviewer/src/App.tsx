@@ -24,6 +24,7 @@ import {
   saveSiteConfiguration,
   saveVendorConfiguration,
   setActiveSiteId,
+  uploadInvoiceImage,
   type AdminConfiguration,
   type AdminSummary,
   type ManualInvoiceInput,
@@ -211,6 +212,109 @@ function ReceiptCard({
       </form>
     </article>
   );
+}
+
+function InvoiceEntryChoice({
+  onChoose,
+  onClose,
+}: {
+  onChoose: (mode: 'manual' | 'upload') => void;
+  onClose: () => void;
+}) {
+  return <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+    <section className="manual-invoice-panel entry-choice-panel" role="dialog" aria-modal="true" aria-labelledby="invoice-entry-title" onMouseDown={(event) => event.stopPropagation()}>
+      <header>
+        <div><p>New invoice</p><h2 id="invoice-entry-title">How would you like to add it?</h2></div>
+        <button type="button" className="icon-button" onClick={onClose} aria-label="Close invoice options">×</button>
+      </header>
+      <div className="entry-choice-grid">
+        <button type="button" className="entry-choice" onClick={() => onChoose('upload')}>
+          <span aria-hidden="true">▣</span>
+          <strong>Upload invoice</strong>
+          <small>Choose a photo or scanned image</small>
+        </button>
+        <button type="button" className="entry-choice" onClick={() => onChoose('manual')}>
+          <span aria-hidden="true">✎</span>
+          <strong>Enter details</strong>
+          <small>Add the invoice without an image</small>
+        </button>
+      </div>
+    </section>
+  </div>;
+}
+
+function InvoiceImageUpload({
+  vendors,
+  onBack,
+  onClose,
+  onCreated,
+}: {
+  vendors: ReviewerContext['vendors'];
+  onBack: () => void;
+  onClose: () => void;
+  onCreated: () => Promise<void>;
+}) {
+  const [vendorId, setVendorId] = useState(vendors.length === 1 ? vendors[0].id : '');
+  const [quantity, setQuantity] = useState('');
+  const [unit, setUnit] = useState('UNIT');
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const valid = Boolean(file && vendorId && Number(quantity) > 0 && unit);
+
+  const submit = async () => {
+    if (!file) return;
+    setBusy(true);
+    setMessage('');
+    try {
+      await uploadInvoiceImage(file, vendorId, Number(quantity), unit);
+      await onCreated();
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : 'Invoice image could not be uploaded.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+    <section className="manual-invoice-panel" role="dialog" aria-modal="true" aria-labelledby="invoice-upload-title" onMouseDown={(event) => event.stopPropagation()}>
+      <header>
+        <div><p>New invoice</p><h2 id="invoice-upload-title">Upload invoice</h2></div>
+        <button type="button" className="icon-button" onClick={onClose} aria-label="Close image upload">×</button>
+      </header>
+      <form className="manual-invoice-form" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+        <label className="file-drop wide">Invoice image
+          <input
+            required
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            onChange={(event) => setFile(event.target.files?.[0] || null)}
+            disabled={busy}
+          />
+          <span>{file ? file.name : 'Choose JPG, PNG or WebP'}</span>
+        </label>
+        <label>Vendor
+          <select required aria-label="Vendor" value={vendorId} onChange={(event) => setVendorId(event.target.value)} disabled={busy}>
+            <option value="">Select vendor</option>
+            {vendors.map((vendor) => <option key={vendor.id} value={vendor.id}>{vendor.name}</option>)}
+          </select>
+        </label>
+        <label>Quantity
+          <input required aria-label="Quantity" type="number" min="0.001" max="1000000000" step="any" inputMode="decimal" value={quantity} onChange={(event) => setQuantity(event.target.value)} disabled={busy} />
+        </label>
+        <label>Unit
+          <select required aria-label="Unit" value={unit} onChange={(event) => setUnit(event.target.value)} disabled={busy}>
+            {commonUnits.map((option) => <option key={option} value={option}>{option}</option>)}
+          </select>
+        </label>
+        {message ? <p className="form-message wide" role="alert">{message}</p> : null}
+        <div className="manual-invoice-actions wide">
+          <button type="button" className="button secondary" onClick={onBack} disabled={busy}>Back</button>
+          <button className="button primary" disabled={busy || !valid}>{busy ? 'Uploading…' : 'Upload invoice'}</button>
+        </div>
+      </form>
+    </section>
+  </div>;
 }
 
 function ManualInvoiceForm({
@@ -525,7 +629,7 @@ function ReviewerApp() {
   const [context, setContext] = useState<ReviewerContext | null>(null);
   const [activeSite, setActiveSite] = useState('');
   const [invitationCode, setInvitationCode] = useState('');
-  const [manualInvoiceOpen, setManualInvoiceOpen] = useState(false);
+  const [invoiceEntryMode, setInvoiceEntryMode] = useState<'choice' | 'manual' | 'upload' | null>(null);
   const [toast, setToast] = useState('');
 
   useEffect(() => {
@@ -587,7 +691,7 @@ function ReviewerApp() {
       {!context ? <section className="membership-accept"><h1>Join your ChallanSe team</h1><p>Enter the one-time code supplied by your organization administrator.</p><label>Invitation code<input value={invitationCode} onChange={(event) => setInvitationCode(event.target.value)} autoComplete="one-time-code" /></label><button className="button primary" disabled={busy || invitationCode.trim().length < 16} onClick={() => void acceptInvitation()}>Accept invitation</button></section> : null}
       {context && !activeSite ? <div className="notice" role="status"><strong>Choose a site to continue.</strong><span>Your access is limited to the sites listed above.</span></div> : null}
       {view === 'DELTA' ? <DeltaView /> : <>
-      <section className="inbox-header"><div><h1>{title}</h1><p>Check the image and confirm the highlighted fields.</p></div><div className="inbox-actions">{activeAccess?.role !== 'AUDITOR' ? <button className="button primary" onClick={() => setManualInvoiceOpen(true)} disabled={!activeSite || siteVendors.length === 0}>Create invoice</button> : null}<button className="icon-button refresh" onClick={() => void load(false)} aria-label="Refresh inbox">↻</button></div></section>
+      <section className="inbox-header"><div><h1>{title}</h1><p>Check the image and confirm the highlighted fields.</p></div><div className="inbox-actions">{activeAccess?.role !== 'AUDITOR' ? <button className="button primary" onClick={() => setInvoiceEntryMode('choice')} disabled={!activeSite || siteVendors.length === 0}>Create invoice</button> : null}<button className="icon-button refresh" onClick={() => void load(false)} aria-label="Refresh inbox">↻</button></div></section>
       <nav className="filters" aria-label="Receipt status">{filters.map((filter) => <button key={filter.value} className={status === filter.value ? 'active' : ''} onClick={() => setStatus(filter.value)}>{filter.label}</button>)}</nav>
       {message ? <div className="notice error" role="alert">{message}<button onClick={() => void load(false)}>Retry</button></div> : null}
       {busy && receipts.length === 0 ? <div className="empty">Loading receipts…</div> : null}
@@ -596,14 +700,26 @@ function ReviewerApp() {
       {nextCursor ? <button className="button secondary load-more" onClick={() => void load(true)} disabled={busy}>Load more</button> : null}
       </>}
     </main>
-    {manualInvoiceOpen ? <ManualInvoiceForm
+    {invoiceEntryMode === 'choice' ? <InvoiceEntryChoice onChoose={setInvoiceEntryMode} onClose={() => setInvoiceEntryMode(null)} /> : null}
+    {invoiceEntryMode === 'manual' ? <ManualInvoiceForm
       vendors={siteVendors}
       purchaseOrders={purchaseOrders}
-      onClose={() => setManualInvoiceOpen(false)}
+      onClose={() => setInvoiceEntryMode(null)}
       onCreated={async () => {
-        setManualInvoiceOpen(false);
+        setInvoiceEntryMode(null);
         setStatus('NEEDS_REVIEW');
         setToast('Invoice created and added to Needs review.');
+        await load(false);
+      }}
+    /> : null}
+    {invoiceEntryMode === 'upload' ? <InvoiceImageUpload
+      vendors={siteVendors}
+      onBack={() => setInvoiceEntryMode('choice')}
+      onClose={() => setInvoiceEntryMode(null)}
+      onCreated={async () => {
+        setInvoiceEntryMode(null);
+        setStatus('NEEDS_REVIEW');
+        setToast('Invoice uploaded. OCR will prepare it for review.');
         await load(false);
       }}
     /> : null}

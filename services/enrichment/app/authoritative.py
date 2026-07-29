@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
+from PIL import Image, UnidentifiedImageError
 
 from .config import Settings
 from .audit_chain import audit_event_hash
@@ -28,6 +29,7 @@ from .schemas import (
     QuotaAdminRequest,
     ReceiptEvent,
     ReceiptReviewRequest,
+    ReviewerImageInvoiceRequest,
     RevokeAllDevicesRequest,
     SiteAdminRequest,
     UploadSessionRequest,
@@ -823,6 +825,208 @@ def create_manual_invoice(
         )
         connection.commit()
     return {"receiptId": str(receipt_id), "status": "NEEDS_REVIEW"}
+
+
+def create_reviewer_image_invoice(
+    settings: Settings,
+    reviewer: ReviewerContext,
+    request: ReviewerImageInvoiceRequest,
+    image_body: bytes,
+    content_type: str,
+    s3_client=None,
+) -> dict[str, Any]:
+    if reviewer.role == "AUDITOR":
+        raise AuthoritativeError("INVOICE_CREATE_FORBIDDEN", 403)
+    if content_type not in {"image/jpeg", "image/png", "image/webp"}:
+        raise AuthoritativeError("INVALID_IMAGE_TYPE", 415)
+    if not image_body or len(image_body) > 10_000_000:
+        raise AuthoritativeError("INVALID_IMAGE_SIZE", 413)
+    try:
+        with Image.open(io.BytesIO(image_body)) as image:
+            image.verify()
+        with Image.open(io.BytesIO(image_body)) as image:
+            if image.width < 200 or image.height < 200 or image.width * image.height > 25_000_000:
+                raise AuthoritativeError("INVALID_IMAGE_DIMENSIONS", 422)
+            converted = io.BytesIO()
+            image.convert("RGB").save(converted, format="WEBP", quality=80, method=4)
+            body = converted.getvalue()
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as error:
+        raise AuthoritativeError("INVALID_IMAGE", 415) from error
+    if len(body) > 5_000_000:
+        raise AuthoritativeError("IMAGE_TOO_LARGE", 413)
+
+    receipt_id = uuid4()
+    captured_at_unix = int(time.time())
+    image_hash = hashlib.sha256(body).hexdigest()
+    date_prefix = datetime.now(timezone.utc).date().isoformat()
+    image_key = f"{reviewer.organization_id}/{reviewer.site_id}/{date_prefix}/{receipt_id}.webp"
+    event = ReceiptEvent(
+        receipt_id=str(receipt_id),
+        organization_id=str(reviewer.organization_id),
+        site_id=str(reviewer.site_id),
+        image_key=image_key,
+        vendor_id=request.vendor_id,
+        captured_at_unix=captured_at_unix,
+        site_captured_quantity=request.quantity,
+        image_sha256=image_hash,
+        image_bytes=len(body),
+    )
+    _s3_put(
+        settings,
+        image_key,
+        body,
+        "image/webp",
+        {
+            "receipt-id": str(receipt_id),
+            "organization-id": str(reviewer.organization_id),
+            "site-id": str(reviewer.site_id),
+            "sha256": image_hash,
+        },
+        s3_client,
+        True,
+    )
+    try:
+        with tenant_connection(settings.database_url, str(reviewer.organization_id), row_factory=dict_row) as connection:
+            vendor = connection.execute(
+                "SELECT id FROM vendors WHERE id = %s AND site_id = %s AND active",
+                (request.vendor_id, reviewer.site_id),
+            ).fetchone()
+            if not vendor:
+                raise AuthoritativeError("VENDOR_NOT_FOUND", 404)
+            policy = connection.execute(
+                """
+                SELECT s.daily_receipt_limit AS site_daily_limit,
+                       o.daily_receipt_limit AS organization_daily_limit,
+                       o.storage_byte_limit
+                FROM sites s JOIN organizations o ON o.id = s.organization_id
+                WHERE s.id = %s AND s.organization_id = %s AND s.active AND o.active
+                """,
+                (reviewer.site_id, reviewer.organization_id),
+            ).fetchone()
+            if not policy:
+                raise AuthoritativeError("SITE_INACTIVE", 403)
+            quota_date = datetime.now(timezone.utc).date().isoformat()
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (f"daily-organization:{reviewer.organization_id}:{quota_date}",),
+            )
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (f"daily-site:{reviewer.organization_id}:{reviewer.site_id}:{quota_date}",),
+            )
+            site_count = connection.execute(
+                "SELECT COUNT(*) AS count FROM receipts WHERE site_id = %s AND created_at >= CURRENT_DATE",
+                (reviewer.site_id,),
+            ).fetchone()["count"]
+            organization_count = connection.execute(
+                "SELECT COUNT(*) AS count FROM receipts WHERE organization_id = %s AND created_at >= CURRENT_DATE",
+                (reviewer.organization_id,),
+            ).fetchone()["count"]
+            if int(site_count) >= int(policy["site_daily_limit"]):
+                raise AuthoritativeError("DAILY_LIMIT", 429)
+            if int(organization_count) >= int(policy["organization_daily_limit"]):
+                raise AuthoritativeError("TENANT_DAILY_LIMIT", 429)
+            storage_limit = int(int(policy["storage_byte_limit"]) * 0.9)
+            quota = connection.execute(
+                """
+                UPDATE organizations SET stored_image_bytes = stored_image_bytes + %s, updated_at = NOW()
+                WHERE id = %s AND active AND stored_image_bytes + %s <= %s
+                RETURNING id
+                """,
+                (len(body), reviewer.organization_id, len(body), storage_limit),
+            ).fetchone()
+            if not quota:
+                raise AuthoritativeError("TENANT_STORAGE_LIMIT", 507)
+            connection.execute(
+                """
+                INSERT INTO receipts
+                  (id, organization_id, site_id, device_id, vendor_id, captured_at_unix, captured_quantity,
+                   image_key, image_bytes, image_sha256, status, enrichment_status, gst_status, integrity_status,
+                   unit, app_version, configuration_version, source)
+                VALUES
+                  (%s, %s, %s, NULL, %s, %s, %s,
+                   %s, %s, %s, 'RECEIVED', 'PENDING', 'DISABLED', 'UNAVAILABLE',
+                   %s, NULL, NULL, 'IMAGE_UPLOAD')
+                """,
+                (
+                    receipt_id,
+                    reviewer.organization_id,
+                    reviewer.site_id,
+                    request.vendor_id,
+                    captured_at_unix,
+                    request.quantity,
+                    image_key,
+                    len(body),
+                    image_hash,
+                    request.unit,
+                ),
+            )
+            audit_body = {
+                "event": "INVOICE_IMAGE_UPLOADED",
+                "source": "IMAGE_UPLOAD",
+                "vendorId": request.vendor_id,
+                "quantity": request.quantity,
+                "unit": request.unit,
+                "imageBytes": len(body),
+            }
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (f"audit:{reviewer.organization_id}:{reviewer.site_id}",),
+            )
+            previous = connection.execute(
+                """
+                SELECT event_hash FROM audit_events
+                WHERE organization_id = %s AND site_id = %s
+                ORDER BY created_at DESC, id DESC LIMIT 1
+                """,
+                (reviewer.organization_id, reviewer.site_id),
+            ).fetchone()
+            previous_hash = "" if previous is None else str(_row_value(previous, "event_hash"))
+            connection.execute(
+                """
+                INSERT INTO audit_events
+                  (id, organization_id, site_id, receipt_id, event_type, actor_type, actor_id,
+                   event_json, source_class, previous_hash, event_hash)
+                VALUES (%s, %s, %s, %s, 'INVOICE_IMAGE_UPLOADED', 'USER', %s,
+                        %s, 'service', %s, %s)
+                """,
+                (
+                    uuid4(),
+                    reviewer.organization_id,
+                    reviewer.site_id,
+                    receipt_id,
+                    str(reviewer.user_id),
+                    Jsonb(audit_body),
+                    previous_hash or None,
+                    _audit_hash(previous_hash, audit_body),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO transactional_outbox
+                  (id, organization_id, aggregate_id, event_type, event_version, destination,
+                   idempotency_key, payload_json)
+                VALUES (%s, %s, %s, 'RECEIPT_ENRICHMENT_QUEUE', 1, 'SQS', %s, %s)
+                """,
+                (
+                    uuid4(),
+                    reviewer.organization_id,
+                    receipt_id,
+                    f"receipt-enrichment:{receipt_id}:1",
+                    Jsonb(event.model_dump(mode="json")),
+                ),
+            )
+            connection.commit()
+    except Exception:
+        try:
+            delete_all_object_versions(_s3(settings, s3_client), settings.receipt_bucket, image_key)
+        except Exception as cleanup_error:
+            logger.warning(
+                "reviewer_upload_cleanup_failed",
+                extra={"error_code": type(cleanup_error).__name__},
+            )
+        raise
+    return {"receiptId": str(receipt_id), "status": "RECEIVED"}
 
 
 def list_receipts(settings: Settings, reviewer: ReviewerContext, status: str = "NEEDS_REVIEW", limit: int = 25) -> list[dict[str, Any]]:

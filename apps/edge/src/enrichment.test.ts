@@ -124,6 +124,38 @@ describe('stateless authoritative proxy', () => {
     expect(headers.get('X-ChallanSe-OIDC-Subject')).toBe('subject');
   });
 
+  it('forwards reviewer image uploads and their allowlisted metadata', async () => {
+    const env = fakeEnv();
+    const image = new Uint8Array([1, 2, 3, 4]);
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ receiptId: 'receipt-3', status: 'RECEIVED' }),
+      { status: 202, headers: { 'Content-Type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+    await proxyAuthoritativeRequest(
+      new Request('https://api.challanse.constrovet.com/v1/reviewer/invoice-images', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'image/webp',
+          'X-ChallanSe-Site-Id': '22222222-2222-4222-8222-222222222222',
+          'X-ChallanSe-Vendor-Id': 'vendor-1',
+          'X-ChallanSe-Quantity': '25',
+          'X-ChallanSe-Unit': 'BAG',
+        },
+        body: image,
+      }),
+      env,
+      { issuer: 'https://constrovet.cloudflareaccess.com', subject: 'subject', email: 'reviewer@example.com' },
+    );
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = new Headers(init.headers);
+    expect(url).toBe('https://enrichment.example/v1/reviewer/invoice-images');
+    expect(headers.get('X-ChallanSe-Vendor-Id')).toBe('vendor-1');
+    expect(headers.get('X-ChallanSe-Quantity')).toBe('25');
+    expect(headers.get('X-ChallanSe-Unit')).toBe('BAG');
+    expect(new Uint8Array(init.body as ArrayBuffer)).toEqual(image);
+  });
+
   it('streams private image responses without buffering or public caching', async () => {
     const env = fakeEnv();
     const stream = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1, 2, 3])); controller.close(); } });

@@ -61,9 +61,10 @@ export async function proxyAuthoritativeRequest(
   const path = sourceUrl.pathname;
   const signedTarget = `${path}${sourceUrl.search}`;
   const body = request.method === 'GET' || request.method === 'HEAD' ? new ArrayBuffer(0) : await request.arrayBuffer();
-  if (body.byteLength > 1_100_000) return error(request, env, 413, 'REQUEST_TOO_LARGE', 'The request exceeds the production limit.');
+  const requestLimit = path === '/v1/reviewer/invoice-images' ? 10_000_000 : 1_100_000;
+  if (body.byteLength > requestLimit) return error(request, env, 413, 'REQUEST_TOO_LARGE', 'The request exceeds the production limit.');
   const headers = new Headers(await outboundHeaders(env, request.method, signedTarget, body));
-  for (const name of ['Authorization', 'Content-Type', 'Accept', 'X-Part-Sha256', 'X-ChallanSe-Nonce', 'X-ChallanSe-Device-Timestamp', 'X-ChallanSe-Site-Id', 'X-ChallanSe-Play-Integrity']) {
+  for (const name of ['Authorization', 'Content-Type', 'Accept', 'X-Part-Sha256', 'X-ChallanSe-Nonce', 'X-ChallanSe-Device-Timestamp', 'X-ChallanSe-Site-Id', 'X-ChallanSe-Play-Integrity', 'X-ChallanSe-Vendor-Id', 'X-ChallanSe-Quantity', 'X-ChallanSe-Unit']) {
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
   }
