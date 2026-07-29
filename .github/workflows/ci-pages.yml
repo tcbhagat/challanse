@@ -90,6 +90,7 @@ jobs:
       - run: python -m pip_audit --requirement services/enrichment/requirements.txt
       - run: bandit -q -r services/enrichment/app
       - name: Scan Git history for secrets
+        # gitleaks v8.18.2
         run: docker run --rm -v "$PWD:/repo" zricethezav/gitleaks@sha256:cdbb7c955abce02001a9f6c9f602fb195b7fadc1e812065883f695d1eeaba854 git --config /repo/.gitleaks.toml --no-banner --redact --exit-code 1 /repo
       - run: bash scripts/test-production-config.sh
       - name: Scan Terraform configuration

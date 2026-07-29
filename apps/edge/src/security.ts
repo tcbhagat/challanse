@@ -9,7 +9,11 @@ export function allowedOrigins(env: Env): Set<string> {
 
 export function corsHeaders(request: Request, env: Env): HeadersInit {
   const origin = request.headers.get('Origin') ?? '';
-  if (!allowedOrigins(env).has(origin)) return {};
+  if (!allowedOrigins(env).has(origin)) {
+    // Return Vary so caching proxies know the response depends on the Origin header,
+    // but omit Access-Control-Allow-Origin to deny CORS access explicitly.
+    return { Vary: 'Origin' };
+  }
   return {
     'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Part-Sha256, X-ChallanSe-Nonce, X-ChallanSe-Device-Timestamp, X-ChallanSe-Site-Id, X-ChallanSe-Play-Integrity',

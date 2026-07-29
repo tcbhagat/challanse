@@ -43,11 +43,9 @@
     });
   }
 
-  const turnstileTimer = window.setInterval(() => {
+  window.turnstile?.ready?.(() => {
     renderTurnstile();
-    if (turnstileWidgetId !== null) window.clearInterval(turnstileTimer);
-  }, 250);
-  window.setTimeout(() => window.clearInterval(turnstileTimer), 10000);
+  });
 
   pilotForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -74,7 +72,8 @@
       if (formStatus) formStatus.textContent = "Request received. We will contact you about the one-site pilot.";
       if (turnstileWidgetId !== null) window.turnstile.reset(turnstileWidgetId);
       turnstileToken = "";
-    } catch {
+    } catch (error) {
+      console.warn("Pilot request failed:", error);
       if (formStatus) formStatus.textContent = "Request could not be sent. Please try again.";
     } finally {
       submit.disabled = false;
@@ -298,11 +297,28 @@
     dropzone.style.borderColor = "";
     var droppedFile = e.dataTransfer.files && e.dataTransfer.files[0];
     if (droppedFile) {
-      /* Simulate picking the file through the file input */
-      var dt = new DataTransfer();
-      dt.items.add(droppedFile);
-      fileInput.files = dt.files;
-      fileInput.dispatchEvent(new Event("change"));
+      /* Validate and add the dropped file directly */
+      if (!droppedFile.type.match(/^image\/(png|jpeg|webp)$/)) {
+        alert("Please select a PNG, JPEG, or WebP image.");
+        return;
+      }
+      if (droppedFile.size > 10_000_000) {
+        alert("Image is too large. Maximum size is 10 MB.");
+        return;
+      }
+      var reader = new FileReader();
+      reader.addEventListener("load", function () {
+        uploadedFiles.push({
+          file: droppedFile,
+          name: droppedFile.name,
+          size: droppedFile.size,
+          dataUrl: reader.result
+        });
+        renderQueue();
+        updateSubmitBar();
+        showPreview(uploadedFiles[uploadedFiles.length - 1]);
+      });
+      reader.readAsDataURL(droppedFile);
     }
   });
 

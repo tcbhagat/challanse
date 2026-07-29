@@ -17,7 +17,8 @@ async function verifyTurnstile(token: string, request: Request, env: Env): Promi
     body,
   });
   if (!response.ok) return false;
-  return (await response.json<{ success?: boolean }>()).success === true;
+  const result = (await response.json()) as { success?: boolean };
+  return result.success === true;
 }
 
 function isAuthoritativeRoute(path: string): boolean {
@@ -66,8 +67,17 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
       return await handleRequest(request, env);
-    } catch {
-      return error(request, env, 502, 'UPSTREAM_FAILURE', 'The production data service could not complete the request.');
+    } catch (err) {
+      console.error('Unhandled worker error:', err);
+      const isUpstream = err instanceof TypeError && err.message.includes('fetch');
+      return error(
+        request, env,
+        isUpstream ? 502 : 500,
+        isUpstream ? 'UPSTREAM_FAILURE' : 'INTERNAL_ERROR',
+        isUpstream
+          ? 'The production data service could not complete the request.'
+          : 'An internal error occurred processing the request.',
+      );
     }
   },
 } satisfies ExportedHandler<Env>;

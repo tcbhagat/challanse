@@ -132,7 +132,7 @@
 .cs-pilot-form textarea { resize: vertical; }
 .cs-pilot-form input:focus, .cs-pilot-form textarea:focus, .cs-dialog-close:focus-visible { outline: 3px solid rgba(3, 105, 161, .25); outline-offset: 2px; }
 .cs-pilot-form__wide { grid-column: 1 / -1; }
-.cs-honeypot { left: -9999px; position: absolute; }
+.cs-honeypot { position: absolute; width: 0; height: 0; overflow: hidden; opacity: 0; pointer-events: none; }
 #cs-turnstile { margin: 20px 0 12px; min-height: 65px; }
 .cs-form-status { color: var(--cs-muted); min-height: 24px; }
 

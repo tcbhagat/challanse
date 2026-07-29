@@ -92,11 +92,36 @@ from .local_auth import (
     validate_session,
 )
 from .pilot_control import PilotControlError, require_capture_enabled
+from .rate_limiting import RateLimitMiddleware, check_pilot_rate_limit
 
 
 logger = logging.getLogger("challanse.enrichment")
 configure_observability(get_settings())
 app = FastAPI(title="ChallanSe Enrichment", version="1.0.0")
+app.add_middleware(RateLimitMiddleware, limits={"/v1/pilot-requests": (10, 3600)})
+
+
+@app.middleware("http")
+async def _csp_middleware(request: Request, call_next):
+    """Add Content-Security-Policy to non-JSON, non-API responses
+    (HTML pages, file responses) as a defence-in-depth layer."""
+    response = await call_next(request)
+    content_type = response.headers.get("content-type", "")
+    # Only add CSP to HTML or explicitly non-API content; skip JSON API responses.
+    if "text/html" in content_type or "text/css" in content_type:
+        if "content-security-policy" not in response.headers:
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; "
+                "script-src 'self' 'unsafe-inline'; "
+                "style-src 'self' 'unsafe-inline'; "
+                "img-src 'self' data:; "
+                "font-src 'self'; "
+                "base-uri 'none'; "
+                "form-action 'none';"
+            )
+    return response
+
+
 FastAPIInstrumentor.instrument_app(app, excluded_urls="health,ready")
 MAX_INTERNAL_REQUEST_BYTES = 1_100_000
 
@@ -419,7 +444,11 @@ async def authoritative_explain_local_status(request: Request, settings=Depends(
 
 
 @app.post("/v1/pilot-requests", status_code=status.HTTP_201_CREATED)
-async def authoritative_pilot_request(request: Request, settings=Depends(get_settings)) -> dict[str, str]:
+async def authoritative_pilot_request(
+    request: Request,
+    settings=Depends(get_settings),
+    _rate_limit: None = Depends(check_pilot_rate_limit),
+) -> dict[str, str]:
     raw = await _verify_internal_request(request, settings)
     if request.headers.get("X-ChallanSe-Turnstile-Verified") != "true":
         raise HTTPException(status_code=401, detail="TURNSTILE_REQUIRED")

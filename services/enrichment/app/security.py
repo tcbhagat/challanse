@@ -79,12 +79,21 @@ def verify_access_service_token(expected_id: str, expected_secret: str, supplied
     return hmac.compare_digest(expected_id, supplied_id) and hmac.compare_digest(expected_secret, supplied_secret)
 
 
+def expire_service_nonces(database_url: str) -> None:
+    """Remove expired nonces from the database. Call periodically, not inline."""
+    if not database_url:
+        return
+    with psycopg.connect(database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("DELETE FROM service_request_nonces WHERE expires_at < NOW()")
+        connection.commit()
+
+
 def consume_service_nonce(database_url: str, request: ServiceRequest) -> bool:
     if not database_url:
         return False
     with psycopg.connect(database_url) as connection:
         with connection.cursor() as cursor:
-            cursor.execute("DELETE FROM service_request_nonces WHERE expires_at < NOW()")
             cursor.execute(
                 """
                 INSERT INTO service_request_nonces (request_id, key_id, content_sha256)

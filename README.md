@@ -45,7 +45,7 @@ Integration tests use PostgreSQL and LocalStack containers to exercise RLS, idem
 ## Guarded production sequence
 
 ```bash
-cd /home/taran/challanse-website
+cd /path/to/challanse-website
 git pull --ff-only
 
 ./scripts/go-live.sh preflight
@@ -108,7 +108,7 @@ The three-month pilot is governed by `docs/pilot-budget.md`: INR 450,000 total c
 Use the guarded zero-cost workflow before a client funds cloud infrastructure:
 
 ```bash
-cd /home/taran/challanse-website
+cd /path/to/challanse-website
 ./scripts/zero-cost-readiness.sh status
 ./scripts/zero-cost-readiness.sh install-terraform
 ./scripts/zero-cost-readiness.sh local-staging
