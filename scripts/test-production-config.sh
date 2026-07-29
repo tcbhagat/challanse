@@ -179,6 +179,11 @@ fi
 grep -Fq '/app/apps/edge/.wrangler:rw,noexec,nosuid,uid=1000,gid=1000,mode=0700' deploy/local/docker-compose.yml
 grep -Fq '/app/apps/reviewer/.wrangler:rw,noexec,nosuid,uid=1000,gid=1000,mode=0700' deploy/local/docker-compose.yml
 grep -Fq 'compose up -d --force-recreate' scripts/local-pilot.sh
+start_stack_body="$(sed -n '/^start_stack() {/,/^}/p' scripts/local-pilot.sh)"
+printf '%s\n' "$start_stack_body" | grep -Fq 'compose build' || {
+  echo "Local startup must rebuild service images before applying migrations." >&2
+  exit 1
+}
 test -s deploy/local/docker-compose.snap.yml
 grep -Fq 'SNAP_COMPOSE_FILE=' scripts/local-pilot.sh
 grep -Fq 'name=apparmor' scripts/local-pilot.sh

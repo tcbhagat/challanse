@@ -698,6 +698,7 @@ start_stack() {
   ensure_local_test_config
   load_env
   [[ "$(local_ip)" == "$CHALLANSE_LAN_IP" ]] || die "LAN IP changed. Reissue the pilot certificate before startup."
+  compose build
   if [[ "$mode" == "--both" ]]; then
     if [[ -z "${TUNNEL_TOKEN:-}" ]]; then
       read -r -s -p 'Cloudflare pilot tunnel token: ' TUNNEL_TOKEN; printf '\n'
