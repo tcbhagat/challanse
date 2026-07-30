@@ -3,11 +3,72 @@ main = "src/index.ts"
 compatibility_date = "2026-07-14"
 routes = [{ pattern = "api.challanse.constrovet.com", custom_domain = true }]
 
+# ─── D1 Database (relational core + graph overlay) ──────────────────────────
+[[d1_databases]]
+binding = "DB"
+database_name = "challanse-core"
+database_id = ""  # $$D1_DATABASE_ID
+migrations_dir = "migrations"
+
+# ─── R2 Object Storage (receipt images, audit exports, backups) ────────────
+[[r2_buckets]]
+binding = "RECEIPTS"
+bucket_name = "challanse-receipts"
+
+[[r2_buckets]]
+binding = "AUDIT_EXPORTS"
+bucket_name = "challanse-audit-exports"
+
+# ─── KV Namespaces (sessions, config cache, rate limiting) ─────────────────
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = ""  # $$SESSIONS_KV_ID
+preview_id = ""  # $$SESSIONS_KV_PREVIEW_ID
+
+[[kv_namespaces]]
+binding = "CONFIG"
+id = ""  # $$CONFIG_KV_ID
+preview_id = ""  # $$CONFIG_KV_PREVIEW_ID
+
+[[kv_namespaces]]
+binding = "RATE_LIMITS"
+id = ""  # $$RATE_LIMITS_KV_ID
+preview_id = ""  # $$RATE_LIMITS_KV_PREVIEW_ID
+
+# ─── Queues (event processing, OCR pipeline, audit events) ─────────────────
+[[queues]]
+binding = "RECEIPT_QUEUE"
+queue = "receipt-enrichment"
+
+[[queues]]
+binding = "AUDIT_QUEUE"
+queue = "audit-events"
+
+# ─── Environment Variables ──────────────────────────────────────────────────
 [vars]
 ALLOWED_ORIGINS = "https://challanse.constrovet.com,https://review.challanse.constrovet.com"
 ACCESS_TEAM_DOMAIN = ""
 ACCESS_AUD = ""
 ENVIRONMENT = "production"
-ENRICHMENT_URL = ""
+TURNSTILE_SITE_KEY = ""
+PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER = "0"
+GROK_API_BASE_URL = "https://api.x.ai/v1"
+
+# HMAC signing keys (key rotation supported with NEXT variant)
 EDGE_TO_ENRICHMENT_HMAC_KEY_ID = ""
 EDGE_TO_ENRICHMENT_NEXT_HMAC_KEY_ID = ""
+
+# agentmemory configuration
+AGENTMEMORY_URL = ""
+AGENTMEMORY_API_KEY = ""
+
+# ─── Secrets (set via wrangler secret put) ──────────────────────────────────
+# TURNSTILE_SECRET
+# EDGE_TO_ENRICHMENT_HMAC_KEY
+# EDGE_TO_ENRICHMENT_NEXT_HMAC_KEY
+# DEVICE_TOKEN_PEPPER
+# TENANT_CONTEXT_HMAC_KEY
+# PLAY_INTEGRITY_CREDENTIALS_JSON
+# XAI_API_KEY (Grok)
+# AGENTMEMORY_API_KEY
+# SESSION_ENCRYPTION_KEY

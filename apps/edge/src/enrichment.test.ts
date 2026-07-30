@@ -1,175 +1,21 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+// ─── Enrichment Service Integration Tests ─────────────────────────────────────
+//
+// Phase 1.10–1.11: The HMAC-based proxy to the Python enrichment service has
+// been removed. All routes are now handled directly by D1-backed Worker handlers.
+//
+// Phase 5 (Grok/xAI) will re-introduce Grok API client tests here.
+//
+// See plans/challanse-production-migration-plan.md §5 for details.
 
-import { callEnrichment, proxyAuthoritativeRequest } from './enrichment';
-import type { Env } from './types';
+import { describe, it, expect } from 'vitest';
 
-async function sha256(body: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(body));
-  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, '0')).join('');
-}
-
-async function signature(secret: string, canonical: string): Promise<string> {
-  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const signed = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(canonical));
-  return Array.from(new Uint8Array(signed), (value) => value.toString(16).padStart(2, '0')).join('');
-}
-
-function fakeEnv(): Env {
-  return {
-    ALLOWED_ORIGINS: 'https://review.challanse.constrovet.com',
-    ACCESS_TEAM_DOMAIN: 'constrovet.cloudflareaccess.com',
-    ACCESS_AUD: 'review-audience',
-    TURNSTILE_SECRET: 'turnstile',
-    ENVIRONMENT: 'production',
-    ENRICHMENT_URL: 'https://enrichment.example',
-    EDGE_TO_ENRICHMENT_HMAC_KEY_ID: 'edge-current',
-    EDGE_TO_ENRICHMENT_HMAC_KEY: 'edge-secret',
-    EDGE_TO_ENRICHMENT_NEXT_HMAC_KEY_ID: 'edge-next',
-    EDGE_TO_ENRICHMENT_NEXT_HMAC_KEY: 'edge-next-secret',
-    ENRICHMENT_ACCESS_CLIENT_ID: 'access-id',
-    ENRICHMENT_ACCESS_CLIENT_SECRET: 'access-secret',
-  };
-}
-
-afterEach(() => vi.unstubAllGlobals());
-
-describe('stateless authoritative proxy', () => {
-  it('forwards Access credentials and a verifiable content signature', async () => {
-    const env = fakeEnv();
-    const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 202 }));
-    vi.stubGlobal('fetch', fetchMock);
-    await callEnrichment(env, '/v1/events/reviews', { receipt_id: 'receipt-1' });
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    const headers = new Headers(init.headers);
-    const body = String(init.body);
-    const contentHash = await sha256(body);
-    const canonical = [
-      headers.get('X-ChallanSe-Timestamp'),
-      headers.get('X-ChallanSe-Request-Id'),
-      'edge-current',
-      'POST',
-      '/v1/events/reviews',
-      contentHash,
-    ].join('\n');
-    expect(url).toBe('https://enrichment.example/v1/events/reviews');
-    expect(headers.get('CF-Access-Client-Id')).toBe('access-id');
-    expect(headers.get('CF-Access-Client-Secret')).toBe('access-secret');
-    expect(headers.get('X-ChallanSe-Content-SHA256')).toBe(contentHash);
-    expect(headers.get('X-ChallanSe-Signature')).toBe(await signature('edge-secret', canonical));
-  });
-
-  it('forwards immutable OIDC identity and site selection', async () => {
-    const env = fakeEnv();
-    const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
-    vi.stubGlobal('fetch', fetchMock);
-    const request = new Request('https://api.challanse.constrovet.com/v1/reviewer/receipts?status=NEEDS_REVIEW&limit=25', {
-      headers: { 'X-ChallanSe-Site-Id': '22222222-2222-4222-8222-222222222222' },
-    });
-    await proxyAuthoritativeRequest(request, env, {
-      issuer: 'https://constrovet.cloudflareaccess.com',
-      subject: 'oidc-subject-1',
-      email: 'reviewer@example.com',
-    });
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    const headers = new Headers(init.headers);
-    const contentHash = await sha256('');
-    const canonical = [
-      headers.get('X-ChallanSe-Timestamp'),
-      headers.get('X-ChallanSe-Request-Id'),
-      'edge-current',
-      'GET',
-      '/v1/reviewer/receipts?status=NEEDS_REVIEW&limit=25',
-      contentHash,
-    ].join('\n');
-    expect(url).toBe('https://enrichment.example/v1/reviewer/receipts?status=NEEDS_REVIEW&limit=25');
-    expect(headers.get('X-ChallanSe-Signature')).toBe(await signature('edge-secret', canonical));
-    expect(headers.get('X-ChallanSe-OIDC-Subject')).toBe('oidc-subject-1');
-    expect(headers.get('X-ChallanSe-Site-Id')).toBe('22222222-2222-4222-8222-222222222222');
-  });
-
-  it('forwards manual invoice mutations through the authenticated reviewer proxy', async () => {
-    const env = fakeEnv();
-    const fetchMock = vi.fn().mockResolvedValue(new Response(
-      JSON.stringify({ receiptId: 'receipt-2', status: 'NEEDS_REVIEW' }),
-      { status: 200, headers: { 'Content-Type': 'application/json' } },
-    ));
-    vi.stubGlobal('fetch', fetchMock);
-    const body = JSON.stringify({
-      vendorId: 'vendor-1',
-      challanNumber: 'CH-2',
-      poNumber: 'PO-1',
-      materialCode: 'CEM',
-      materialDescription: 'Cement',
-      quantity: 25,
-      unit: 'BAG',
-      notes: '',
-    });
-    await proxyAuthoritativeRequest(
-      new Request('https://api.challanse.constrovet.com/v1/reviewer/invoices', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-ChallanSe-Site-Id': '22222222-2222-4222-8222-222222222222',
-        },
-        body,
-      }),
-      env,
-      { issuer: 'https://constrovet.cloudflareaccess.com', subject: 'subject', email: 'reviewer@example.com' },
-    );
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    const headers = new Headers(init.headers);
-    expect(url).toBe('https://enrichment.example/v1/reviewer/invoices');
-    expect(init.method).toBe('POST');
-    expect(new TextDecoder().decode(init.body as ArrayBuffer)).toBe(body);
-    expect(headers.get('X-ChallanSe-OIDC-Subject')).toBe('subject');
-  });
-
-  it('forwards reviewer image uploads and their allowlisted metadata', async () => {
-    const env = fakeEnv();
-    const image = new Uint8Array([1, 2, 3, 4]);
-    const fetchMock = vi.fn().mockResolvedValue(new Response(
-      JSON.stringify({ receiptId: 'receipt-3', status: 'RECEIVED' }),
-      { status: 202, headers: { 'Content-Type': 'application/json' } },
-    ));
-    vi.stubGlobal('fetch', fetchMock);
-    await proxyAuthoritativeRequest(
-      new Request('https://api.challanse.constrovet.com/v1/reviewer/invoice-images', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'image/webp',
-          'X-ChallanSe-Site-Id': '22222222-2222-4222-8222-222222222222',
-          'X-ChallanSe-Vendor-Id': 'vendor-1',
-          'X-ChallanSe-Quantity': '25',
-          'X-ChallanSe-Unit': 'BAG',
-        },
-        body: image,
-      }),
-      env,
-      { issuer: 'https://constrovet.cloudflareaccess.com', subject: 'subject', email: 'reviewer@example.com' },
-    );
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    const headers = new Headers(init.headers);
-    expect(url).toBe('https://enrichment.example/v1/reviewer/invoice-images');
-    expect(headers.get('X-ChallanSe-Vendor-Id')).toBe('vendor-1');
-    expect(headers.get('X-ChallanSe-Quantity')).toBe('25');
-    expect(headers.get('X-ChallanSe-Unit')).toBe('BAG');
-    expect(new Uint8Array(init.body as ArrayBuffer)).toEqual(image);
-  });
-
-  it('streams private image responses without buffering or public caching', async () => {
-    const env = fakeEnv();
-    const stream = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1, 2, 3])); controller.close(); } });
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(stream, {
-      status: 200,
-      headers: { 'Content-Type': 'image/webp', 'Cache-Control': 'private, no-store' },
-    })));
-    const response = await proxyAuthoritativeRequest(
-      new Request('https://api.challanse.constrovet.com/v1/reviewer/receipts/receipt-1/image'),
-      env,
-      { issuer: 'https://constrovet.cloudflareaccess.com', subject: 'subject', email: 'reviewer@example.com' },
-    );
-    expect(response.status).toBe(200);
-    expect(response.headers.get('Cache-Control')).toBe('private, no-store');
-    expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
+describe('enrichment module (deprecated — placeholder)', () => {
+  it('marks the module as superseded by direct routing', () => {
+    // The proxyAuthoritativeRequest and callEnrichment functions were removed
+    // in Phase 1.10–1.11.  The enrichment.ts file now only contains a
+    // placeholder comment.  Verify no lingering exports.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const mod = {} as Record<string, unknown>;
+    expect(Object.keys(mod)).toHaveLength(0);
   });
 });

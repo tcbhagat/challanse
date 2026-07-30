@@ -15,7 +15,16 @@
     "test:enrichment": "PYTHONPATH=services/enrichment python3 -m pytest -q services/enrichment/tests",
     "build": "npm run build:landing && npm run build --workspace @challanse/contracts --if-present && npm run build --workspace @challanse/edge && npm run build --workspace @challanse/reviewer",
     "build:landing": "node scripts/build-landing.mjs",
-    "audit": "for run in 1 2 3; do lighthouse http://127.0.0.1:4173/ --only-categories=performance,accessibility,best-practices,seo --output=json --output-path=.lighthouse-$run.json --quiet --chrome-flags=\"--headless=new --no-sandbox --disable-gpu\" || exit 1; done && node scripts/check-lighthouse.mjs .lighthouse-1.json .lighthouse-2.json .lighthouse-3.json"
+    "audit": "for run in 1 2 3; do lighthouse http://127.0.0.1:4173/ --only-categories=performance,accessibility,best-practices,seo --output=json --output-path=.lighthouse-$run.json --quiet --chrome-flags=\"--headless=new --no-sandbox --disable-gpu\" || exit 1; done && node scripts/check-lighthouse.mjs .lighthouse-1.json .lighthouse-2.json .lighthouse-3.json",
+    "cf:setup": "bash scripts/setup-cloudflare.sh",
+    "cf:setup:preview": "bash scripts/setup-cloudflare.sh --preview",
+    "cf:migrate": "npx wrangler d1 migrations apply challanse-core",
+    "cf:migrate:local": "npx wrangler d1 migrations apply challanse-core --local",
+    "cf:deploy": "npx wrangler deploy --config apps/edge/wrangler.toml",
+    "cf:deploy:reviewer": "npx wrangler deploy --config apps/reviewer/wrangler.toml",
+    "cf:dev": "npx wrangler dev --config apps/edge/wrangler.toml --local",
+    "cf:secrets": "node scripts/render-edge-config.mjs",
+    "db:seed": "node scripts/seed-d1.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.12.1",
