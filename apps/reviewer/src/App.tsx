@@ -182,7 +182,7 @@ function ReceiptCard({
             <option value="">Select material</option>
             {materialOptions.map((option) => <option key={option} value={option}>{option}</option>)}
           </select>
-          {description ? <span className="field-preview">{description}</span> : null}
+          {description ? <output className="field-preview">{description}</output> : null}
         </label>
         <label>Quantity
           <input required type="number" min="0.001" step="any" value={quantity} onChange={(event) => setQuantity(event.target.value)} disabled={!editable || busy} />

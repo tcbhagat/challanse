@@ -1,0 +1,22 @@
+# Repository code owners
+# Each line is a file pattern followed by one or more @owner entries.
+# For more information: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+* @tcbhagat
+
+# CI/CD pipeline
+/.github/workflows/ @tcbhagat
+
+# Infrastructure
+/infra/ @tcbhagat
+
+# Security-sensitive services
+/services/enrichment/ @tcbhagat
+/apps/reviewer/ @tcbhagat
+
+# Edge API worker
+/apps/edge/ @tcbhagat
+
+# Deployment and scripts
+/deploy/ @tcbhagat
+/scripts/ @tcbhagat

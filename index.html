@@ -192,65 +192,6 @@
       </div>
     </section>
 
-    <!-- ══════════════════════════════════════════════════════════════
-         INVOICE IMAGE UPLOAD LOOP  (interactive demo)
-         Lets site visitors upload one invoice image at a time,
-         accumulate a queue, and submit all at once — no page
-         reload, no breakage of the existing site.
-         ══════════════════════════════════════════════════════════════ -->
-    <section class="cs-section cs-upload" aria-labelledby="cs-upload-title">
-      <div class="cs-shell">
-        <div class="cs-heading">
-          <p class="cs-eyebrow">Try it yourself</p>
-          <h2 id="cs-upload-title">Upload invoices, one at a time.</h2>
-        </div>
-
-        <div class="cs-upload__layout">
-          <!-- LEFT: upload + queue -->
-          <div class="cs-upload__work-area">
-            <!-- Drop / pick zone -->
-            <div class="cs-upload__dropzone" id="cs-upload-dropzone" role="button" tabindex="0" aria-label="Add an invoice image">
-              <input type="file" id="cs-upload-input" accept="image/png,image/jpeg,image/webp" hidden>
-              <svg class="cs-upload__icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <rect x="6" y="22" width="36" height="20" rx="3" />
-                <path d="M16 14l8-8 8 8M24 6v20" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-              <p class="cs-upload__drop-text">Tap to add an invoice image</p>
-              <p class="cs-upload__drop-hint">PNG, JPEG, or WebP &nbsp;·&nbsp; one at a time</p>
-            </div>
-
-            <!-- Queue list -->
-            <ul class="cs-upload__queue" id="cs-upload-queue" aria-label="Uploaded invoices">
-              <!-- items injected by JS -->
-            </ul>
-
-            <!-- Submit bar -->
-            <div class="cs-upload__submit-bar" id="cs-upload-submit-bar" hidden>
-              <p class="cs-upload__count" id="cs-upload-count">0 invoices ready</p>
-              <button class="cs-button" type="button" id="cs-upload-submit">Submit all invoices</button>
-            </div>
-          </div>
-
-          <!-- RIGHT: currently selected preview -->
-          <div class="cs-upload__preview-panel" id="cs-upload-preview-panel" aria-label="Invoice preview">
-            <div class="cs-upload__preview-empty" id="cs-upload-preview-empty">
-              <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-                <rect x="4" y="8" width="40" height="32" rx="3" stroke-dasharray="4 4"/>
-                <circle cx="18" cy="20" r="3" />
-                <path d="M4 34l12-12 8 8 8-8 12 12" />
-              </svg>
-              <p>No invoice selected</p>
-              <span>Add an image to see a preview</span>
-            </div>
-            <div class="cs-upload__preview-active" id="cs-upload-preview-active" hidden>
-              <img id="cs-upload-preview-img" src="" alt="Invoice preview">
-              <div class="cs-upload__preview-meta" id="cs-upload-preview-meta"></div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-
     <section class="cs-cta" aria-labelledby="cs-cta-title">
       <div class="cs-shell cs-cta__inner">
         <div>
