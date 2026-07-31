@@ -165,6 +165,33 @@ describe('render-edge-config.mjs', () => {
       expect(toml).toMatch(/GROK_API_BASE_URL\s*=\s*""/);
       expect(toml).toMatch(/AGENTMEMORY_URL\s*=\s*""/);
     });
+
+    it('renders hostile configuration characters as one quoted TOML value', () => {
+      const hostileValue = String.raw`audience\"$[x](y).*+?^{}|\nnext = "injected"`;
+      const env = {
+        D1_DATABASE_ID: 'ci111111111111111111111111111111',
+        SESSIONS_KV_ID: 'ci222222222222222222222222222222',
+        SESSIONS_KV_PREVIEW_ID: 'ci333333333333333333333333333333',
+        CONFIG_KV_ID: 'ci444444444444444444444444444444',
+        CONFIG_KV_PREVIEW_ID: 'ci555555555555555555555555555555',
+        RATE_LIMITS_KV_ID: 'ci666666666666666666666666666666',
+        RATE_LIMITS_KV_PREVIEW_ID: 'ci777777777777777777777777777777',
+        CLOUDFLARE_ACCESS_TEAM_DOMAIN: 'ci-team.example.com',
+        CLOUDFLARE_ACCESS_AUD: hostileValue,
+        ENRICHMENT_URL: 'https://ci-enrichment.example.com',
+        EDGE_TO_ENRICHMENT_HMAC_KEY_ID: 'ci-hmac-id',
+        EDGE_TO_ENRICHMENT_NEXT_HMAC_KEY_ID: 'ci-hmac-next-id',
+        TURNSTILE_SITE_KEY: 'ci-turnstile',
+        PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER: '0',
+      };
+
+      const result = runRender(['--production'], env);
+      expect(result.status).toBe(0);
+      const toml = readFileSync(PRODUCTION_OUTPUT, 'utf8');
+      expect(toml).toContain(`ACCESS_AUD = ${JSON.stringify(hostileValue)}`);
+      expect(toml.match(/^ACCESS_AUD\s*=/gm)).toHaveLength(1);
+      expect(toml).not.toMatch(/^next\s*=/m);
+    });
   });
 
   describe('queue bindings', () => {

@@ -171,7 +171,7 @@ function render(mode) {
       if (mode === 'ci') {
         // Pass 1: fill every $$ marker with a deterministic synthetic ID.
         for (const [envKey, marker] of Object.entries(MARKER_MAP)) {
-          const escaped = marker.replace(/\$/g, '\\$');
+          const escaped = escapeRegExp(marker);
           // Callback form so the $$ marker in the trailing comment is preserved
           // verbatim (the replacement string is used literally, no $$ escaping).
           const pattern = new RegExp(`("[^"]*")(\\s*#\\s*${escaped})`, 'g');
@@ -186,7 +186,7 @@ function render(mode) {
       } else {
         // Pass 1: fill every $$ marker from the (validated) environment.
         for (const [envKey, marker] of Object.entries(MARKER_MAP)) {
-          const escaped = marker.replace(/\$/g, '\\$');
+          const escaped = escapeRegExp(marker);
           const pattern = new RegExp(`("[^"]*")(\\s*#\\s*${escaped})`, 'g');
           config = config.replace(pattern, (_full, _quoted, suffix) => `${JSON.stringify(env[envKey])}${suffix}`);
         }

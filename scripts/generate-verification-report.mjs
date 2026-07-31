@@ -211,8 +211,14 @@ function buildRunUrl(opts) {
 }
 
 function renderReport(ctx) {
-  const { opts, commitSha, generatedAt, tree, runUrl, tlsStatus, freeze, checks } = ctx;
-  const failed = checks.filter((check) => check.exitCode !== 0);
+  const { commitSha, generatedAt, tree, runUrl, tlsStatus, freeze, checks } = ctx;
+  const treeCheck = {
+    label: 'working tree is clean at verification start',
+    exitCode: tree.count === 0 ? 0 : 1,
+    output: tree.count === 0 ? 'clean' : tree.raw,
+  };
+  const reportedChecks = [treeCheck, ...checks];
+  const failed = reportedChecks.filter((check) => check.exitCode !== 0);
   const overall = failed.length === 0 ? 'PASSED' : 'FAILED';
 
   const freezeRows = [
@@ -220,14 +226,14 @@ function renderReport(ctx) {
     `| PILOT_DEPLOY_ENABLED | \`${freeze.pilotDeployEnabled}\`${freeze.pilotFromEnv ? ' (from environment)' : ' (default — not set locally)'} |`,
   ].join('\n');
 
-  const tableRows = checks
+  const tableRows = reportedChecks
     .map(
       (check, index) =>
         `| ${index + 1} | \`${check.label.replaceAll('|', '\\|')}\` | ${check.exitCode} | ${check.exitCode === 0 ? 'PASS' : 'FAIL'} |`
     )
     .join('\n');
 
-  const detailSections = checks
+  const detailSections = reportedChecks
     .map((check, index) => {
       const status = check.exitCode === 0 ? 'PASS' : 'FAIL';
       const output = truncate(check.output || '(no output)', REPORT_OUTPUT_LIMIT);
@@ -274,7 +280,7 @@ function renderReport(ctx) {
     '',
     `**${overall}**`,
     '',
-    `Failed checks: ${failed.length === 0 ? 'none' : `${failed.length} of ${checks.length}`}`,
+    `Failed checks: ${failed.length === 0 ? 'none' : `${failed.length} of ${reportedChecks.length}`}`,
     '',
     '## Checks',
     '',
