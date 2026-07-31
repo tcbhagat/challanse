@@ -13,7 +13,7 @@ apps/mobile/android/*.jks
 apps/mobile/android/*.keystore
 apps/mobile/android/app/src/localPilot/res/raw/*.crt
 apps/mobile/package-lock.json
-apps/edge/wrangler.generated.toml
+apps/edge/config/
 *.log
 artifacts/local-pilot/
 artifacts/playwright/

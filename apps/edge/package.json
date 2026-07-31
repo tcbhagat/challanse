@@ -6,9 +6,10 @@
   "scripts": {
     "check": "tsc --noEmit",
     "test": "vitest run",
-    "build": "wrangler deploy --dry-run --outdir dist",
+    "build": "node ../../scripts/render-edge-config.mjs --ci && wrangler deploy --dry-run --outdir dist --config config/edge.ci.toml",
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "deploy:production": "node ../../scripts/render-edge-config.mjs --production && wrangler deploy --config config/edge.production.toml"
   },
   "dependencies": {
     "@challanse/contracts": "1.0.0",

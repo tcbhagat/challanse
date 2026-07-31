@@ -20,10 +20,10 @@
     "cf:setup:preview": "bash scripts/setup-cloudflare.sh --preview",
     "cf:migrate": "npx wrangler d1 migrations apply challanse-core",
     "cf:migrate:local": "npx wrangler d1 migrations apply challanse-core --local",
-    "cf:deploy": "npx wrangler deploy --config apps/edge/wrangler.toml",
+    "cf:deploy": "node scripts/render-edge-config.mjs --production && npx wrangler deploy --config apps/edge/config/edge.production.toml",
     "cf:deploy:reviewer": "npx wrangler deploy --config apps/reviewer/wrangler.toml",
     "cf:dev": "npx wrangler dev --config apps/edge/wrangler.toml --local",
-    "cf:secrets": "node scripts/render-edge-config.mjs",
+    "cf:secrets": "node scripts/render-edge-config.mjs --production",
     "db:seed": "node scripts/seed-d1.mjs"
   },
   "overrides": {

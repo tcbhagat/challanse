@@ -15,6 +15,7 @@
   }
 
   function openPilotDialog() {
+    if (!runtimeConfig.pilotRequestsEnabled) return;
     if (!pilotDialog) return;
     if (typeof pilotDialog.showModal === "function") pilotDialog.showModal();
     else pilotDialog.setAttribute("open", "");
@@ -31,7 +32,7 @@
   });
 
   function renderTurnstile() {
-    if (!pilotForm || turnstileWidgetId !== null || !window.turnstile) return;
+    if (!runtimeConfig.pilotRequestsEnabled || !pilotForm || turnstileWidgetId !== null || !window.turnstile) return;
     if (!runtimeConfig.turnstileSiteKey || runtimeConfig.turnstileSiteKey.startsWith("__")) {
       if (formStatus) formStatus.textContent = "Pilot requests are not configured yet.";
       return;
