@@ -1,4 +1,5 @@
 window.ChallanSeConfig = Object.freeze({
   apiBaseUrl: '__API_BASE_URL__',
-  turnstileSiteKey: '__TURNSTILE_SITE_KEY__'
+  turnstileSiteKey: '__TURNSTILE_SITE_KEY__',
+  pilotRequestsEnabled: '__PILOT_REQUESTS_ENABLED__' === 'true'
 });

@@ -308,8 +308,8 @@ jobs:
       - run: npm ci
       - run: npm run build:landing
         env:
-          CHALLANSE_API_BASE_URL: https://api.challanse.constrovet.com
-          TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
+          CHALLANSE_PILOT_REQUESTS_ENABLED: "false"
+          CHALLANSE_CONTACT_URL: https://www.constrovet.com/pages/contact.html?interest=challanse
           CHALLANSE_CUSTOM_DOMAIN: challanse.constrovet.com
       - name: Copy CNAME into Pages artifact
         run: cp CNAME dist/landing/CNAME
