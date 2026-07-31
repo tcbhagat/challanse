@@ -1,8 +1,16 @@
 # ChallanSe Repository — Architectural Survey Report
 
-**Date:** 2026-07-30  
-**Repository:** `/home/taran/challanse-website`  
+**Date:** 2026-07-31<br>
+**Repository:** `/home/taran/challanse-website`<br>
 **Survey Type:** Full-stack architecture, CI/CD, infrastructure, and quality review
+
+> **Corrections applied 2026-07-31:** This revision fixes previously stale claims
+> (governance files reported as missing although they exist, CI migration
+> validation reported as incomplete although it covers all 12 migrations, stale
+> `ci-pages.yml` line numbers, and branch-protection wording that contradicted
+> the corrected `.github/BRANCH-PROTECTION-SETTINGS.md`). It also adds an
+> explicit **Architecture states** section (Section 2) so the document does not
+> describe the Edge Worker as the complete production backend.
 
 ---
 
@@ -18,7 +26,8 @@ challanse-website/
 ├── 🛡️ .roomodes
 ├── 🛡️ AGENTS.md
 ├── AGENTS.md.backup
-├── index.html                  # Public landing page (ChallanSe)
+├── CNAME                       # GitHub Pages custom domain (challanse.constrovet.com)
+├── index.html                  # Public landing page (ChallanSe) — informational only
 ├── package.json                # Root monorepo package
 ├── package-lock.json
 ├── playwright.config.ts
@@ -28,10 +37,14 @@ challanse-website/
 ├── .agents/
 ├── .codex/
 ├── .github/
+│   ├── CODEOWNERS              # Present — review routing by path
+│   ├── dependabot.yml          # Present — automated dependency updates
+│   ├── BRANCH-PROTECTION-SETTINGS.md   # Corrected protection policy (terraform-check required)
 │   └── workflows/
-│       └── ci-pages.yml        # Single CI/CD workflow (527 lines)
+│       ├── ci-pages.yml        # Primary CI/CD workflow
+│       └── codeql-analysis.yml # CodeQL security analysis
 ├── apps/
-│   ├── edge/                   # Cloudflare Workers API
+│   ├── edge/                   # Cloudflare Workers API — EXPERIMENTAL (not production)
 │   │   ├── package.json
 │   │   ├── tsconfig.json
 │   │   ├── wrangler.toml
@@ -57,12 +70,12 @@ challanse-website/
 │   ├── footer.html
 │   ├── nav.html
 │   ├── css/
-│   │   ├── challanse.css       # Landing page styles + upload CSS
+│   │   ├── challanse.css       # Landing page styles
 │   │   └── style.css           # Constrovet shared styles
 │   ├── fonts/
 │   └── js/
-│       ├── challanse.js        # Landing page JS (tabs, upload, pilot form)
-│       ├── main.js              # Shared nav/footer injection
+│       ├── challanse.js        # Landing page JS (tabs, pilot request dialog, Turnstile)
+│       ├── main.js             # Shared nav/footer injection
 │       └── runtime-config.js   # Injected API base URL + Turnstile key
 ├── deploy/
 │   └── local/                  # Docker Compose, Caddyfile for local Pilot
@@ -83,7 +96,7 @@ challanse-website/
 │   └── terraform/
 │       ├── backend.hcl.example
 │       ├── modules/
-│       │   └── enrichment/     # Reusable enrichment module (1387 lines)
+│       │   └── enrichment/     # Reusable enrichment module
 │       ├── production/
 │       │   ├── .terraform.lock.hcl
 │       │   └── main.tf
@@ -92,6 +105,10 @@ challanse-website/
 │           └── main.tf
 ├── packages/
 │   └── contracts/              # Shared TypeScript types (ReceiptListItem, etc.)
+├── plans/
+│   ├── architectural-survey.md # This document
+│   ├── governance-settings.md
+│   └── pages-restoration.md
 ├── quality/
 │   └── gates.json              # Quality gates definition
 ├── scripts/                    # 25+ shell/Python/Node.js scripts
@@ -112,80 +129,98 @@ challanse-website/
 
 ---
 
-## 2. Frontend Analysis
+## 2. Architecture States
 
-### 2.1 Public Landing Page (`index.html`)
+Three distinct architecture states exist in this repository. They must not be
+confused with one another:
+
+### 2.1 Current supported runtime — local synthetic pilot
+
+- **Components:** PostgreSQL, local object storage (LocalStack), Tesseract OCR,
+  and the local `qwen2.5:7b` model.
+- This is the **only currently supported and runnable stack**. All services run
+  locally for development and testing; no remote endpoint is operational
+  outside of local development.
+- The public website is informational only — no real invoices are processed
+  through it.
+
+### 2.2 Planned funded production — AWS architecture (frozen, unprovisioned)
+
+- The AWS architecture described in `infra/terraform/` and `docs/` remains a
+  **planned design**.
+- It is frozen (`AWS_DEPLOYMENT_FROZEN=true`) and **unprovisioned**: no AWS
+  resources are deployed and none are being deployed.
+- `terraform-plan` and `deploy-enrichment` remain gated by the freeze.
+
+### 2.3 Experimental Cloudflare-native backend (incomplete, NOT deployable)
+
+- The Edge Worker (`apps/edge/`) is **experimental**. Queue consumers and
+  architecture approval are **pending**.
+- It is **NOT deployable** and **NOT the complete production backend**.
+- The `deploy-cloudflare` job is gated behind `PILOT_DEPLOY_ENABLED == 'true'`
+  (currently `false`) and the Cloudflare queue-consumer deployment steps are
+  placeholders. External-provider integrations (including xAI/Grok and
+  agentmemory) are disabled — the corresponding secrets/configuration are
+  empty and the adapters are not enabled.
+
+---
+
+## 3. Frontend Analysis
+
+### 3.1 Public Landing Page (`index.html`)
 
 | Aspect | Path | Status |
 |--------|------|--------|
 | HTML structure | [`index.html`](index.html) | Valid HTML5, semantic landmarks |
 | CSP header | [`index.html:61`](index.html:61) | Present (self-only, Turnstile CDN, API endpoint) |
 | SEO meta | [`index.html:6-16`](index.html:6) | Complete (OG, Twitter, canonical, JSON-LD schema) |
-| Interactivity | [`assets/js/challanse.js`](assets/js/challanse.js) | Tab panel, pilot request dialog, invoice upload |
+| Interactivity | [`assets/js/challanse.js`](assets/js/challanse.js) | Workflow tabs, pilot request dialog with Turnstile, POST to `/v1/pilot-requests` |
 
-#### Issues Found
+**Observation:** The landing page contains **no invoice upload section** and no
+`<section class="cs-upload">`. The pilot request dialog collects business
+contact details only. Prior issues regarding a `<div role="button">` upload
+dropzone, an empty `<img src="">` preview, and a simulated invoice upload were
+**resolved** — none of those elements exist in the current markup or script.
 
-**Issue 1: Non-semantic clickable upload trigger**  
-- **File:** [`index.html:212`](index.html:212)  
-- **Code:** `<div class="cs-upload__dropzone" id="cs-upload-dropzone" role="button" tabindex="0" aria-label="Add an invoice image">`  
-- **Problem:** Uses a `<div>` with `role="button"` to trigger file selection, rather than a native `<button>` or `<label for="cs-upload-input">`. The hidden `<input type="file">` is on line 213.  
-- **WCAG violation:** Non-semantic interactive element; may not work reliably with all assistive technologies.  
-- **Fix:** Replace with `<label class="cs-upload__dropzone" for="cs-upload-input">` containing the inner content, or use `<button type="button">` to open the file picker via JS.
-
-**Issue 2: Empty `<img src="">` attribute**  
-- **File:** [`index.html:246`](index.html:246)  
-- **Code:** `<img id="cs-upload-preview-img" src="" alt="Invoice preview">`  
-- **Problem:** `src=""` is an empty attribute. Browsers treat this as a request to the current page URL, which generates an unnecessary HTTP request (or a broken-image icon).  
-- **Fix:** Either omit the `src` attribute initially, use `src=""` with explicit handling, or remove the element from the initial DOM and create it dynamically.
-
-**Issue 3: Simulated invoice upload — no real API endpoint**  
-- **File:** [`assets/js/challanse.js:326-348`](assets/js/challanse.js:326)  
-- **Code:** Simulated submission with `setTimeout` that opens the pilot request dialog. No actual file upload API call.  
-- **Observation:** This is intentional for the landing page demo, but may confuse users expecting a real upload. No action needed unless the product requirement changes.
-
-### 2.2 React Native Mobile App (`apps/mobile/`)
+### 3.2 React Native Mobile App (`apps/mobile/`)
 
 | Aspect | Path | Status |
 |--------|------|--------|
 | Entry point | [`apps/mobile/index.js`](apps/mobile/index.js) | Registers main App + headless sync task |
 | Package | [`apps/mobile/package.json`](apps/mobile/package.json) | React Native 0.86.0, 12 dependencies |
-| Build variants | [`apps/mobile/package.json:19`](apps/mobile/package.json:19) | `assembleLocalPilot` custom build flavor |
+| Build variants | [`apps/mobile/package.json`](apps/mobile/package.json) | `assembleLocalPilot` custom build flavor |
 | Camera | `react-native-vision-camera` ^5.1.0 | Present |
 | SQLCipher | `@op-engineering/op-sqlite` ^17.1.2 | SQLCipher enabled for offline storage |
 | Keychain | `react-native-keychain` ^10.0.0 | Credential storage |
 | Netinfo | `@react-native-community/netinfo` ^12.0.1 | Connectivity detection |
 
-### 2.3 React Reviewer SPA (`apps/reviewer/`)
+### 3.3 React Reviewer SPA (`apps/reviewer/`)
 
 | Aspect | Path | Status |
 |--------|------|--------|
 | Entry | [`apps/reviewer/src/App.tsx`](apps/reviewer/src/App.tsx) | Full SPA with inbox, delta view, admin panel |
-| Build | [`apps/reviewer/package.json`](apps/reviewer/package.json) | Vite 8.1.4, React 19, TypeScript 5.9 |
-| Testing | [`apps/reviewer/package.json:27-28`](apps/reviewer/package.json:27) | Vitest 4.1.10, jsdom |
+| Build | [`apps/reviewer/package.json`](apps/reviewer/package.json) | Vite, React 19, TypeScript |
+| Testing | [`apps/reviewer/package.json`](apps/reviewer/package.json) | Vitest, jsdom |
 
-#### Issue Found
-
-**Issue 4: Preview label on a non-semantic `<span>` element**  
-- **File:** [`apps/reviewer/src/App.tsx:185`](apps/reviewer/src/App.tsx:185)  
-- **Code:** `<span className="field-preview">{description}</span>`  
-- **Problem:** The material description preview is rendered in a plain `<span>`, which provides no semantic relationship to the form field it describes.  
-- **Fix:** Use `<output>` element with appropriate `htmlFor` attribute referencing the material input, or use `aria-describedby` on the `<select>` to link to the preview.
+**Observation:** The material description preview uses the semantic `<output>`
+element (`<output className="field-preview">`). The prior issue (preview label
+on a plain `<span>`) was **resolved**.
 
 ---
 
-## 3. Python Backend Analysis (`services/enrichment/`)
+## 4. Python Backend Analysis (`services/enrichment/`)
 
-### 3.1 Structure
+### 4.1 Structure
 
 | Component | Path | Description |
 |-----------|------|-------------|
-| FastAPI app | [`services/enrichment/app/main.py`](services/enrichment/app/main.py) | 984 lines, 30+ endpoints |
-| Workflow engine | [`services/enrichment/app/workflow.py`](services/enrichment/app/workflow.py) | Receipt enrichment pipeline (Image → OCR → GST) |
+| FastAPI app | [`services/enrichment/app/main.py`](services/enrichment/app/main.py) | 30+ endpoints |
+| Workflow engine | [`services/enrichment/app/workflow.py`](services/enrichment/app/workflow.py) | Receipt enrichment pipeline (Image → OCR) |
 | Docker image | [`services/enrichment/Dockerfile`](services/enrichment/Dockerfile) | Python 3.12-slim, uvicorn |
 | Dependencies | [`services/enrichment/requirements.txt`](services/enrichment/requirements.txt) | FastAPI, boto3, psycopg, Pillow, cryptography, OpenTelemetry |
-| Test deps | [`services/enrichment/requirements-dev.txt`](services/enrichment/requirements-dev.txt) | pytest 9.1.1 |
+| Test deps | [`services/enrichment/requirements-dev.txt`](services/enrichment/requirements-dev.txt) | pytest |
 
-### 3.2 Migrations (0001–0012)
+### 4.2 Migrations (0001–0012)
 
 | Migration | File | Purpose |
 |-----------|------|---------|
@@ -202,78 +237,93 @@ challanse-website/
 | 0011 | [`0011_manual_invoice_entry.sql`](services/enrichment/migrations/0011_manual_invoice_entry.sql) | Manual invoice support (source=MANUAL) |
 | 0012 | [`0012_reviewer_image_invoice.sql`](services/enrichment/migrations/0012_reviewer_image_invoice.sql) | Add IMAGE_UPLOAD source to receipts |
 
-### 3.3 Review/Invoice Upload Workflow
+### 4.3 Review/Invoice Upload Workflow
 
-- **Manual invoice creation:** [`main.py:612-621`](services/enrichment/app/main.py:612) — `POST /v1/reviewer/invoices` — creates a receipt with `source=MANUAL`, no image required.
-- **Image invoice upload:** [`main.py:624-647`](services/enrichment/app/main.py:624) — `POST /v1/reviewer/invoice-images` — accepts image binary with metadata headers, creates receipt with `source=IMAGE_UPLOAD`.
-- **Receipt enrichment pipeline:** [`workflow.py`](services/enrichment/app/workflow.py) — `_process_receipt_event()` → fetch image → verify WebP → extract GPS → OCR → optionally validate GST.
+- **Manual invoice creation:** `POST /v1/reviewer/invoices` — creates a receipt
+  with `source=MANUAL`, no image required.
+- **Image invoice upload:** `POST /v1/reviewer/invoice-images` — accepts image
+  binary with metadata headers, creates receipt with `source=IMAGE_UPLOAD`.
+- **Receipt enrichment pipeline:** `workflow.py` `_process_receipt_event()` →
+  fetch image → verify WebP → extract GPS → OCR.
 
-### Issue Found
-
-**Issue 5: CI migration validation skips migrations 0008, 0009, 0010, 0012**
-- **File:** [`.github/workflows/ci-pages.yml:74`](.github/workflows/ci-pages.yml:74)  
-- **Code:** Validates `0001` through `0007`, then `0011`, but omits `0008`, `0009`, `0010`, `0012`.  
-- **Fix:** Add checks for `0008_local_service_health.sql`, `0009_local_test_runs.sql`, `0010_local_test_run_identity_retention.sql`, and `0012_reviewer_image_invoice.sql`. Or switch to a dynamic check like `for f in migrations/*.sql; do test -s "$f"; done`.
+**Note (corrected):** CI migration validation is **not** incomplete. The
+`enrichment` job in `ci-pages.yml` runs
+`bash ../../scripts/validate-migrations.sh --check-only`, and
+[`scripts/validate-migrations.sh`](scripts/validate-migrations.sh) validates
+**all 12** migration files (0001–0012).
 
 ---
 
-## 4. CI/CD Analysis (`.github/workflows/ci-pages.yml`)
+## 5. CI/CD Analysis (`.github/workflows/`)
 
-Only **one workflow file** exists. It contains 8 jobs:
+Two workflow files exist:
 
-| Job | Line | Purpose | Gates |
-|-----|------|---------|-------|
-| `validate` | 17 | Static checks + build | `npm ci`, `npm run check`, `npm test`, `npm audit`, `npm run build`, Lighthouse |
-| `android` | 41 | Android build | TypeScript check, Jest tests, Gradle assembleDebug |
-| `enrichment` | 59 | Python tests | Pytest, migration file validation |
-| `security` | 76 | Security scanning | `npm audit`, `pip-audit`, `bandit`, `gitleaks`, Trivy on Terraform |
-| `terraform-plan` | 99 | TF validation | `terraform fmt`, `init`, `validate` — **gated behind `AWS_DEPLOYMENT_FROZEN != 'true'`** |
-| `integration` | 115 | Integration tests | Postgres + LocalStack, pytest integration markers — **gated behind `AWS_DEPLOYMENT_FROZEN != 'true'`** |
-| `deploy-enrichment` | 159 | AWS ECS deploy | **Gated on:** `main` branch, no PR, `AWS_DEPLOYMENT_FROZEN != 'true'`, `PILOT_DEPLOY_ENABLED == 'true'`, `AWS_ENRICHMENT_BOOTSTRAPPED == 'true'`. Requires all 6 prior jobs. |
-| `deploy-landing` | 255 | Cloudflare Pages | **Gated on:** `main` branch, no PR, `PILOT_DEPLOY_ENABLED == 'true'`. Requires validate, android, enrichment, security. |
-| `deploy-cloudflare` | 286 | Workers + D1 + Queues | **Gated on:** `main` branch, no PR, `PILOT_DEPLOY_ENABLED == 'true'`. Requires validate, android, enrichment, security. |
-| `release-android` | 413 | Google Play AAB | **Gated on:** `main` branch, no PR, `PILOT_DEPLOY_ENABLED == 'true'`, `PLAY_PUBLISH_ENABLED == 'true'`. Requires deploy-cloudflare, deploy-landing. |
+- `.github/workflows/ci-pages.yml` — primary CI/CD pipeline.
+- `.github/workflows/codeql-analysis.yml` — CodeQL security analysis for
+  JavaScript/TypeScript and Python.
+
+The `ci-pages.yml` jobs (line references intentionally omitted — job names are
+the stable identifier):
+
+| Job | Purpose | Gates |
+|-----|---------|-------|
+| `validate` | Static checks + build | `npm ci`, `npm run check`, `npm test`, `npm audit`, `npm run build`, edge integration, production-config, Lighthouse |
+| `android` | Android build | TypeScript check, Jest tests, Gradle assembleDebug |
+| `enrichment` | Python tests | Pytest, migration file validation (**all 12 migrations** via `validate-migrations.sh --check-only`) |
+| `security` | Security scanning | `npm audit`, `pip-audit`, `bandit`, `gitleaks`, config-check, Trivy on Terraform (matrix, `fail-fast: false`) |
+| `terraform-plan` | TF plan validation | **Gated behind `AWS_DEPLOYMENT_FROZEN != 'true'`** — skipped while the freeze is active; not a required check |
+| `integration` | Integration tests | Postgres + LocalStack, pytest integration markers — **no `if:` gate**, always runs |
+| `terraform-check` | TF validation | `terraform fmt`, `init`, `validate` on staging and production — **no `if:` gate**; the required check instead of `terraform-plan` |
+| `deploy-enrichment` | AWS ECS deploy (deprecated) | **Gated on:** no PR, `main`, `AWS_DEPLOYMENT_FROZEN != 'true'`, `PILOT_DEPLOY_ENABLED == 'true'`, `AWS_ENRICHMENT_BOOTSTRAPPED == 'true'` |
+| `deploy-landing` | GitHub Pages informational landing | **Runs on:** no PR, `main` push — decoupled from `PILOT_DEPLOY_ENABLED`; builds the static landing (`npm run build:landing`), copies `CNAME` into `dist/landing/`, configures Pages, uploads `dist/landing`, deploys Pages. No application/API secrets are used. |
+| `deploy-cloudflare` | Cloudflare Workers + D1 + Queues (experimental) | **Gated on:** no PR, `main`, `PILOT_DEPLOY_ENABLED == 'true'`. Queue-consumer deployment steps are placeholders. |
+| `release-android` | Google Play AAB | **Gated on:** no PR, `main`, `PILOT_DEPLOY_ENABLED == 'true'`, `PLAY_PUBLISH_ENABLED == 'true'` |
 
 ### Key Security Checks
 
-| Check | Tool | Location |
-|-------|------|----------|
-| npm audit | `npm audit --omit=dev --audit-level=high` | Lines 28, 88 |
-| Python vulnerability scan | `pip-audit` | Line 90 |
-| Python SAST | `bandit -q -r services/enrichment/app` | Line 91 |
-| Git history secrets | `gitleaks` (Docker, v8.18.2) | Line 94 |
-| Terraform scanning | `trivy config` (Docker, pinned SHA) | Line 97 |
-| Container vulnerability (deploy) | `trivy image` | Line 186 |
+| Check | Tool | Job |
+|-------|------|-----|
+| npm audit | `npm audit --omit=dev --audit-level=high` | `validate`, `security (npm-audit)` |
+| Python vulnerability scan | `pip-audit` | `security (pip-audit)` |
+| Python SAST | `bandit -q -r services/enrichment/app` | `security (bandit)` |
+| Git history secrets | `gitleaks` (Docker, v8.18.2) | `security (secret-scanning)` |
+| Terraform scanning | `trivy config` (Docker, pinned SHA) | `security (tfscan)` |
+| Container vulnerability (deploy) | `trivy image` | `deploy-enrichment` |
 
 ### Deployment Gating Variables
 
 | Variable | Purpose | Used In |
 |----------|---------|---------|
-| `AWS_DEPLOYMENT_FROZEN` | Blocks all AWS paths if `'true'` | terraform-plan, integration, deploy-enrichment |
-| `PILOT_DEPLOY_ENABLED` | Enables deployment jobs if `'true'` | deploy-enrichment, deploy-landing, deploy-cloudflare, release-android |
-| `AWS_ENRICHMENT_BOOTSTRAPPED` | Enables AWS enrichment deploy | deploy-enrichment |
-| `PLAY_PUBLISH_ENABLED` | Enables Google Play publishing | release-android |
+| `AWS_DEPLOYMENT_FROZEN` | Blocks all AWS paths if `'true'` | `terraform-plan`, `deploy-enrichment` |
+| `PILOT_DEPLOY_ENABLED` | Enables deployment jobs if `'true'` | `deploy-enrichment`, `deploy-cloudflare`, `release-android` (NOT `deploy-landing`) |
+| `AWS_ENRICHMENT_BOOTSTRAPPED` | Enables AWS enrichment deploy | `deploy-enrichment` |
+| `PLAY_PUBLISH_ENABLED` | Enables Google Play publishing | `release-android` |
 
 ### Issues Found
 
-**Issue 6: Failing workflow (Actions Run ID 30526195580)**  
-Without direct access to the logs, the workflow may fail due to the `AWS_DEPLOYMENT_FROZEN == 'true'` variable blocking `terraform-plan` and `integration` jobs — this is **by design** per `docs/aws-deployment-freeze.md`. The CI would show these jobs as skipped, not failed. If there's a genuine failure, it's likely in `validate` (Lighthouse thresholds or HTML validation) or `enrichment` (migration validation step failing — see Issue 5).
+**Issue 1: Cloudflare-native backend is experimental and incomplete**<br>
+The Edge Worker exists in `apps/edge/`, but queue consumers are not built and
+architecture approval is pending. The `deploy-cloudflare` job is gated behind
+`PILOT_DEPLOY_ENABLED` and must remain disabled. The Edge Worker is **not** the
+complete production backend.
 
-**Issue 7: Migration validation in CI is incomplete**  
-See Issue 5 above — the `enrichment` job's migration validation step (line 74) does not cover files 0008, 0009, 0010, and 0012.
+**Issue 2: Frozen AWS jobs are intentionally skipped**<br>
+While `AWS_DEPLOYMENT_FROZEN=true`, `terraform-plan` and `deploy-enrichment`
+are skipped by design per `docs/aws-deployment-freeze.md`. This is intentional;
+`terraform-check` always runs as the required validation.
 
 ---
 
-## 5. Terraform Analysis (`infra/terraform/`)
+## 6. Terraform Analysis (`infra/terraform/`)
 
-### 5.1 Structure
+### 6.1 Structure
 
 ```
 infra/terraform/
 ├── backend.hcl.example
 ├── modules/
 │   └── enrichment/
-│       ├── main.tf           # 1387 lines — VPC, RDS, ECS, S3, SQS, KMS, ALB, backups
+│       ├── main.tf           # VPC, RDS, ECS, S3, SQS, KMS, ALB, backups
 │       ├── outputs.tf
 │       ├── variables.tf
 │       └── versions.tf
@@ -285,19 +335,22 @@ infra/terraform/
     └── main.tf                # Staging config (single-AZ, mock OCR, 1 task)
 ```
 
-### 5.2 Key Architecture
+### 6.2 Key Architecture (planned, frozen)
 
 - **Region:** `ap-south-1` (Mumbai)
 - **VPC:** /16 CIDR, 2 AZs, public + private subnets, NAT gateways
 - **RDS:** PostgreSQL 17.5, encrypted, automated backups, PITR
 - **ECS:** Fargate tasks (API, Worker, Migration, Cloudflare Tunnel)
 - **S3:** Receipt image bucket with KMS encryption, versioning, lifecycle policies
-- **SQS:** Receipt queue with DLQ, credit FIFO queue with DLQ
+- **SQS:** Receipt queue with DLQ
 - **ALB:** Internal-facing HTTPS, TLS 1.3-1.2
 - **KMS:** Single key for all data encryption (RDS, S3, SQS, Secrets Manager)
 - **Secrets Manager:** Runtime config + database connection strings
 
-### 5.3 Staging vs Production Differences
+> **Note:** This AWS architecture is **planned and frozen** (State 2 above). No
+> AWS resources are deployed or being deployed.
+
+### 6.3 Staging vs Production Differences
 
 | Parameter | Staging | Production |
 |-----------|---------|------------|
@@ -313,76 +366,88 @@ infra/terraform/
 
 ### Issue Found
 
-**Issue 8: `PILOT_DEPLOY_ENABLED` is the master deployment gate**  
-The variable `PILOT_DEPLOY_ENABLED` controls production deployment across all jobs. The README states it's managed by a guarded CLI that sets it to `true` temporarily and restores it to `false` on completion/failure. This is working as designed.
+**Issue 3: `PILOT_DEPLOY_ENABLED` remains the gate for AWS/Cloudflare deploys**<br>
+`PILOT_DEPLOY_ENABLED` gates `deploy-enrichment`, `deploy-cloudflare`, and
+`release-android`. It is managed by a guarded CLI that sets it to `true`
+temporarily and restores it to `false` on completion/failure. The informational
+GitHub Pages landing (`deploy-landing`) is the exception — it no longer depends
+on this variable.
 
 ---
 
-## 6. npm Dependencies & Audit State
+## 7. npm Dependencies & Audit State
 
-### 6.1 Package Structure
+### 7.1 Package Structure
 
 - **Root:** Monorepo with workspaces `apps/*` and `packages/*`
-- **Dev dependencies:** `@axe-core/playwright`, `@playwright/test`, `html-validate`, `lighthouse`, `react`, `react-dom`
-- **Workspaces:** `@challanse/mobile`, `@challanse/reviewer`, `@challanse/edge`, `@challanse/contracts`
+- **Dev dependencies:** `@axe-core/playwright`, `@playwright/test`,
+  `html-validate`, `lighthouse`, `react`, `react-dom`
+- **Workspaces:** `@challanse/mobile`, `@challanse/reviewer`, `@challanse/edge`,
+  `@challanse/contracts`
 
-### 6.2 brace-expansion
+### 7.2 brace-expansion
 
-`brace-expansion` **is present** as a transitive dependency in `package-lock.json`, occurring in multiple packages:
-- `@eslint/eslintrc` → `minimatch` → `brace-expansion` v1.1.16
-- `@humanwhocodes/config-array` → `brace-expansion` v1.1.16
-- `@typescript-eslint/typescript-estree` → `brace-expansion` v5.0.7
-- `eslint` → `brace-expansion` v1.1.16
-- `eslint-plugin-react` → `brace-expansion` v1.1.16
-- `glob` → `brace-expansion` v1.1.16
-- `test-exclude` → `brace-expansion` v1.1.16
-
-**Note:** `brace-expansion` v1.1.16 has a known ReDoS vulnerability. The CI runs `npm audit --omit=dev --audit-level=high`, which would catch this if it's rated HIGH or above. v1.1.16 was released in 2024 to fix the ReDoS, so it should be patched. The CI runs `npm audit` at high severity level only.
+`brace-expansion` appears as a transitive dependency in `package-lock.json`
+via eslint/glob tooling. Older v1.1.x releases carried a known ReDoS
+advisory. The root `package.json` pins an `overrides` entry
+(`"brace-expansion": "5.0.9"`), which resolves all transitive occurrences to
+the patched major version. CI runs `npm audit --omit=dev --audit-level=high`
+and would fail on any HIGH-or-above vulnerability.
 
 ---
 
-## 7. Repository Governance
+## 8. Repository Governance
 
-### 7.1 Files Found
+### 8.1 Files Found
 
 | File | Path | Status |
 |------|------|--------|
-| `CODEOWNERS` | — | **NOT FOUND** |
-| `dependabot.yml` | — | **NOT FOUND** |
-| `renovate.json` | — | **NOT FOUND** |
-| Branch protection | — | Not checked (GitHub settings) |
+| `CODEOWNERS` | [`.github/CODEOWNERS`](.github/CODEOWNERS) | **Present** |
+| `dependabot.yml` | [`.github/dependabot.yml`](.github/dependabot.yml) | **Present** |
+| `codeql-analysis.yml` | [`.github/workflows/codeql-analysis.yml`](.github/workflows/codeql-analysis.yml) | **Present** |
+| `renovate.json` | — | Not found (not used) |
+| Branch protection | [`.github/BRANCH-PROTECTION-SETTINGS.md`](.github/BRANCH-PROTECTION-SETTINGS.md) | Corrected policy — see below |
 | `.gitleaks.toml` | [`.gitleaks.toml`](.gitleaks.toml) | Extends default rules only |
 | `.gitleaksignore` | [`.gitleaksignore`](.gitleaksignore) | Present (empty/in use) |
 | `README.md` | [`README.md`](README.md) | Extensive, documents all systems |
 | `quality/gates.json` | [`quality/gates.json`](quality/gates.json) | Quality gates definition |
 | `🛡️ AGENTS.md` | [`🛡️ AGENTS.md`](🛡️%20AGENTS.md) | Agent instructions |
 
-### 7.2 Observations
+### 8.2 Observations
 
-- **No Dependabot or Renovate** — automated dependency updates are not configured.
-- **No CODEOWNERS** — no automatic review assignment by path.
+- **Dependabot is configured** (`.github/dependabot.yml`) for npm, pip, and
+  GitHub Actions ecosystems. Renovate is not used.
+- **CODEOWNERS is present** (`.github/CODEOWNERS`) — automatic review routing
+  by path (CI/CD, infrastructure, enrichment, reviewer, edge, deploy, scripts).
+- **CodeQL is configured** via `.github/workflows/codeql-analysis.yml` for
+  JavaScript/TypeScript and Python.
 - **`.gitleaks.toml` uses only default rules** — no custom patterns.
-- **Quality gates** defined in JSON: blocking at CRITICAL/HIGH, covering OWASP ASVS, API Top 10, MASVS L1, CIS Docker, WCAG 2.2 AA, and recovery controls.
-- **Branch protection** on `main` is enforced via `ci-pages.yml` — requires `validate`, `android`, `enrichment`, `security`, `integration`, and `terraform-plan` to pass.
+- **Quality gates** defined in JSON: blocking at CRITICAL/HIGH, covering OWASP
+  ASVS, API Top 10, MASVS L1, CIS Docker, WCAG 2.2 AA, and recovery controls.
+- **Branch protection** is documented in
+  [`.github/BRANCH-PROTECTION-SETTINGS.md`](.github/BRANCH-PROTECTION-SETTINGS.md).
+  Per the corrected policy, the required status checks are `validate`,
+  `android`, `enrichment`, `security` (six matrix variants), `integration`, and
+  **`terraform-check`**. **`terraform-plan` is NOT a required check** — it is
+  gated behind `AWS_DEPLOYMENT_FROZEN` and does not run during the freeze.
 
 ---
 
-## 8. Issues Summary
+## 9. Issues Summary
 
-| # | Severity | Area | File | Description |
-|---|----------|------|------|-------------|
-| 1 | **Medium** | Frontend (Landing) | [`index.html:212`](index.html:212) | Non-semantic `<div role="button">` as file upload trigger. Replace with `<label>` or `<button>`. |
-| 2 | **Low** | Frontend (Landing) | [`index.html:246`](index.html:246) | Empty `src=""` on `<img>` causes unnecessary request. Set to empty string or remove initially. |
-| 3 | **Low** | Frontend (Landing) | [`assets/js/challanse.js:326`](assets/js/challanse.js:326) | Simulated invoice upload with `setTimeout` — no real API. Intentional demo behavior. |
-| 4 | **Low** | Frontend (Reviewer) | [`apps/reviewer/src/App.tsx:185`](apps/reviewer/src/App.tsx:185) | `<span>` used as preview label instead of `<output>` or `aria-describedby` linking. |
-| 5 | **Medium** | CI/CD | [`.github/workflows/ci-pages.yml:74`](.github/workflows/ci-pages.yml:74) | Migration validation step skips 0008, 0009, 0010, 0012. Add missing file checks. |
-| 6 | **Info** | CI/CD | `ci-pages.yml` | CI may show skipped jobs (`terraform-plan`, `integration`) when `AWS_DEPLOYMENT_FROZEN=true`. This is intentional. |
-| 7 | **Info** | CI/CD | `deploy-enrichment` | Migration output hardcoded to `0006_local_pilot.sql`. Consider dynamic enumeration. |
-| 8 | **Info** | Governance | — | No Dependabot, no CODEOWNERS, no Renovate configured. |
+| # | Severity | Area | Description |
+|---|----------|------|-------------|
+| 1 | **Info** | Cloudflare-native backend | Edge Worker (`apps/edge/`) is experimental and incomplete — queue consumers and architecture approval pending. Not the production backend. |
+| 2 | **Info** | CI/CD | `terraform-plan` and `deploy-enrichment` are skipped while `AWS_DEPLOYMENT_FROZEN=true` — intentional. `terraform-check` is the always-running validation. |
+| 3 | **Info** | CI/CD | `deploy-cloudflare` (and `deploy-enrichment`, `release-android`) remain gated behind `PILOT_DEPLOY_ENABLED == 'true'` — currently `false`. |
+
+Previously reported issues — non-semantic upload `<div>`, empty `<img src="">`,
+simulated invoice upload, `<span>` preview label, incomplete CI migration
+validation, missing Dependabot, and missing CODEOWNERS — are **resolved**.
 
 ---
 
-## 9. Current State Summary
+## 10. Current State Summary
 
 ### Working
 
@@ -392,63 +457,55 @@ The variable `PILOT_DEPLOY_ENABLED` controls production deployment across all jo
 - ✅ React Native mobile: TypeScript checks, Jest tests, Gradle builds
 - ✅ Reviewer SPA: TypeScript builds, Vite bundles, Vitest tests
 - ✅ Python enrichment: pytest runs unit + integration tests
-- ✅ All 12 PostgreSQL migrations exist and are valid SQL
+- ✅ All 12 PostgreSQL migrations exist and are validated by CI
+  (`validate-migrations.sh --check-only`)
 - ✅ Playwright browser tests with visual snapshots
-- ✅ Terraform modules validate with `terraform validate`
+- ✅ Terraform modules validate with `terraform validate` (`terraform-check`)
 - ✅ Security scanning (Bandit, gitleaks, pip-audit, Trivy, npm audit)
+- ✅ Dependabot, CODEOWNERS, and CodeQL are configured
 
 ### Known Issues
 
-- ❌ CI migration validation is incomplete (missing 4 migration files)
-- ❌ Landing page upload dropzone is a `<div>` not a native button/label
-- ❌ Landing page preview `<img>` has empty `src=""`
-- ❌ Reviewer SPA preview label is a plain `<span>` not `<output>`
-- ❌ No Dependabot/Renovate — dependencies may drift behind security patches
-- ❌ No CODEOWNERS — no enforced review routing by path
+- ❌ Cloudflare-native backend is experimental and incomplete (queue consumers
+  and architecture approval pending); it is not the production backend
+- ❌ AWS architecture is frozen and unprovisioned — no resources deployed
 
 ### Deployment Status
 
-- **AWS deployment is FROZEN** (`AWS_DEPLOYMENT_FROZEN=true`) per `docs/aws-deployment-freeze.md`
-- **Pilot deployment** requires `PILOT_DEPLOY_ENABLED=true` (managed by guarded CLI)
-- **Cloudflare Workers** (API/reviewer) are the active deployment target
-- **Local Pilot** (Docker Compose + encrypted storage) is the active demonstration environment
+- **AWS deployment is FROZEN** (`AWS_DEPLOYMENT_FROZEN=true`) per
+  `docs/aws-deployment-freeze.md`; no AWS resources are deployed or being
+  deployed (State 2).
+- **Local synthetic pilot** (PostgreSQL, local object storage, Tesseract OCR,
+  `qwen2.5:7b`) is the **only currently supported and runnable stack**
+  (State 1).
+- **GitHub Pages landing** (`deploy-landing`) runs on protected `main` pushes
+  and publishes the **informational** static landing only. It does not require
+  `PILOT_DEPLOY_ENABLED` and uses no application/API secrets.
+- **Cloudflare Workers** (`deploy-cloudflare`) remain gated behind
+  `PILOT_DEPLOY_ENABLED == 'true'` and are experimental (State 3); the Edge
+  Worker is not the complete production backend.
+- **Pilot deployment** of AWS/Cloudflare requires `PILOT_DEPLOY_ENABLED=true`
+  (managed by guarded CLI); currently `false`.
 
 ---
 
-## 10. Action Items for Code Mode
+## 11. Action Items for Code Mode
 
-### Fix 1: Replace non-semantic upload dropzone with native `<label>`
-**File:** [`index.html:212-220`](index.html:212)  
-**Action:** Change `<div class="cs-upload__dropzone" id="cs-upload-dropzone" role="button" tabindex="0" aria-label="Add an invoice image">` to `<label class="cs-upload__dropzone" for="cs-upload-input" id="cs-upload-dropzone">`. Remove the `click` and `keydown` event listeners in [`assets/js/challanse.js:234-240`](assets/js/challanse.js:234) since `<label>` activates the file input natively. Keep drag-and-drop listeners. Update CSS selector from `#cs-upload-dropzone` to `.cs-upload__dropzone` if needed.
+### Fix 1: Complete the Cloudflare-native backend or remove it from CI
+**File:** `apps/edge/`, `ci-pages.yml`<br>
+**Action:** Finish queue consumers and obtain architecture approval before any
+production use. Until then, keep `deploy-cloudflare` gated behind
+`PILOT_DEPLOY_ENABLED` and treat the Edge Worker as experimental only.
 
-### Fix 2: Fix empty `<img src="">`
-**File:** [`index.html:246`](index.html:246)  
-**Action:** Change `src=""` to `src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"` (1x1 transparent GIF) as a safe placeholder, or remove the `src` attribute entirely and let JavaScript set it dynamically.
+### Fix 2: Keep deployment freeze gates in place
+**File:** `ci-pages.yml`<br>
+**Action:** `terraform-plan` and `deploy-enrichment` must remain gated behind
+`AWS_DEPLOYMENT_FROZEN != 'true'`; `deploy-cloudflare` and `release-android`
+must remain gated behind `PILOT_DEPLOY_ENABLED == 'true'` (plus
+`PLAY_PUBLISH_ENABLED` for Android).
 
-### Fix 3: Update CI migration validation
-**File:** [`.github/workflows/ci-pages.yml:74`](.github/workflows/ci-pages.yml:74)  
-**Action:** Add checks for `0008_local_service_health.sql`, `0009_local_test_runs.sql`, `0010_local_test_run_identity_retention.sql`, and `0012_reviewer_image_invoice.sql`. Example additions:
-```yaml
-&& test -s migrations/0008_local_service_health.sql \
-&& test -s migrations/0009_local_test_runs.sql \
-&& test -s migrations/0010_local_test_run_identity_retention.sql \
-&& test -s migrations/0012_reviewer_image_invoice.sql
-```
+### Resolved (no action needed)
 
-### Fix 4: Replace preview `<span>` with `<output>` in Reviewer SPA
-**File:** [`apps/reviewer/src/App.tsx:185`](apps/reviewer/src/App.tsx:185)  
-**Action:** Change `<span className="field-preview">{description}</span>` to `<output className="field-preview" htmlFor="material-select">{description}</output>` and add `id="material-select"` to the material `<select>` element. Or add `aria-describedby` attribute to the material field referencing the preview element.
-
-### Fix 5 (Optional): Add Dependabot config
-**File:** `.github/dependabot.yml`  
-**Action:** Create a Dependabot configuration for npm and pip dependencies. Example:
-```yaml
-version: 2
-updates:
-  - package-ecosystem: "npm"
-    directory: "/"
-    schedule: { interval: "weekly" }
-  - package-ecosystem: "pip"
-    directory: "/services/enrichment"
-    schedule: { interval: "weekly" }
-```
+The upload dropzone, empty `<img src="">`, simulated upload, `<span>` preview
+label, CI migration validation coverage, Dependabot, and CODEOWNERS action
+items from earlier revisions are **all resolved** in the current codebase.

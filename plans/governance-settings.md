@@ -37,7 +37,7 @@ Sets `@tcbhagat` as the default code owner for all files, with explicit ownershi
 - `/deploy/` — Deployment configs
 - `/scripts/` — Operational scripts
 
-### 3. CodeQL (`/.github/codeql-analysis.yml`)
+### 3. CodeQL (`/.github/workflows/codeql-analysis.yml`)
 
 Runs CodeQL code scanning on push/PR to `main` and on a weekly schedule:
 
@@ -49,9 +49,22 @@ Runs CodeQL code scanning on push/PR to `main` and on a weekly schedule:
 
 ## GitHub UI Configuration (Must Be Set Manually)
 
+> **Status note (2026-07-30)**: The in-repo configuration files (Dependabot,
+> CODEOWNERS, CodeQL workflow, this plan, and
+> `.github/BRANCH-PROTECTION-SETTINGS.md`) are in place, but the **GitHub-side
+> application of the stronger branch protection policy below is PENDING**.
+> The live GitHub branch protection for `main` currently enforces **only** the
+> checks `validate` and `android`. The full 11-check policy documented below is
+> **NOT yet applied** and must not be assumed to be active. Applying it is an
+> operational step (e.g. via `./scripts/go-live.sh harden-github`) that is out
+> of scope for the CI-restoration task.
+
 Navigate to **Repository → Settings** and configure the following:
 
 ### Branch Protection (`Settings → Branches → Add rule → main`)
+
+> **Pending application** — see the status note above. This table describes the
+> documented target policy, not the current live configuration.
 
 | Setting | Value |
 |---------|-------|
@@ -151,5 +164,5 @@ After applying all settings:
 - [CI/CD Pipeline](/.github/workflows/ci-pages.yml)
 - [Dependabot Configuration](/.github/dependabot.yml)
 - [Code Owners](/.github/CODEOWNERS)
-- [CodeQL Workflow](/.github/codeql-analysis.yml)
+- [CodeQL Workflow](/.github/workflows/codeql-analysis.yml)
 - [Architectural Survey](/plans/architectural-survey.md)

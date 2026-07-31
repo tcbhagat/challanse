@@ -36,11 +36,12 @@ id = ""  # $$RATE_LIMITS_KV_ID
 preview_id = ""  # $$RATE_LIMITS_KV_PREVIEW_ID
 
 # ─── Queues (event processing, OCR pipeline, audit events) ─────────────────
-[[queues]]
+# Producer bindings use the current `[[queues.producers]]` syntax (wrangler >= 4).
+[[queues.producers]]
 binding = "RECEIPT_QUEUE"
 queue = "receipt-enrichment"
 
-[[queues]]
+[[queues.producers]]
 binding = "AUDIT_QUEUE"
 queue = "audit-events"
 
@@ -49,10 +50,13 @@ queue = "audit-events"
 ALLOWED_ORIGINS = "https://challanse.constrovet.com,https://review.challanse.constrovet.com"
 ACCESS_TEAM_DOMAIN = ""
 ACCESS_AUD = ""
+ENRICHMENT_URL = ""
 ENVIRONMENT = "production"
 TURNSTILE_SITE_KEY = ""
 PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER = "0"
-GROK_API_BASE_URL = "https://api.x.ai/v1"
+# External-provider integrations (xAI/Grok, agentmemory) are intentionally
+# disabled: these vars must remain empty in both CI and production renders.
+GROK_API_BASE_URL = ""
 
 # HMAC signing keys (key rotation supported with NEXT variant)
 EDGE_TO_ENRICHMENT_HMAC_KEY_ID = ""

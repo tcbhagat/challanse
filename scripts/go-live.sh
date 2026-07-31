@@ -326,12 +326,6 @@ latest_ci_success() {
   sha="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --branch main --limit 1 --json headSha --jq '.[0].headSha')"
   [[ "$conclusion" == "success" && "$sha" == "$(git rev-parse HEAD)" ]] || die "Latest main CI for the current commit is not successful."
 }
-render_edge_config() {
-  load_state
-  [[ -n "${ACCESS_TEAM_DOMAIN:-}" && -n "${ACCESS_AUD:-}" ]] || die "Provisioning state is incomplete."
-  CLOUDFLARE_ACCESS_TEAM_DOMAIN="$ACCESS_TEAM_DOMAIN" CLOUDFLARE_ACCESS_AUD="$ACCESS_AUD" node scripts/render-edge-config.mjs >/dev/null
-}
-
 preflight() {
   for command in gh jq curl openssl git node npm npx base64 sha256sum; do need "$command"; done
   assert_clean_main
@@ -1228,17 +1222,13 @@ assert_production_https_accepted() {
 
 harden_github() {
   preflight
-  local push_maintainers approvals body confirmation
-  push_maintainers="$(gh api "repos/$REPO/collaborators?affiliation=direct&per_page=100" --jq '[.[] | select(.permissions.push == true)] | length')"
-  approvals=0
-  if [[ "$push_maintainers" -ge 2 ]]; then approvals=1; fi
-  printf 'Branch protection will require pull requests, resolved conversations, strict CI, and administrator enforcement. Required approvals: %s\n' "$approvals"
-  [[ "$approvals" == "1" ]] || printf '%s\n' 'Only one push-capable maintainer is available, so independent review cannot yet be enforced.'
+  local body confirmation
+  printf 'Branch protection will require pull requests (1 approval, code owners review), resolved conversations, strict CI with the 11 required checks, linear history, and administrator enforcement.\n'
   read -r -p 'Type HARDEN MAIN to apply these repository rules: ' confirmation
   [[ "$confirmation" == "HARDEN MAIN" ]] || die "Branch protection unchanged."
-  body="$(jq -nc --argjson approvals "$approvals" '{required_status_checks:{strict:true,contexts:["validate","android","enrichment","security","integration","terraform-plan"]},enforce_admins:true,required_pull_request_reviews:{dismiss_stale_reviews:true,require_code_owner_reviews:false,required_approving_review_count:$approvals,require_last_push_approval:false},restrictions:null,required_conversation_resolution:true,allow_force_pushes:false,allow_deletions:false,required_linear_history:true}')"
+  body="$(jq -nc '{required_status_checks:{strict:true,contexts:["validate","android","enrichment","security (npm-audit)","security (pip-audit)","security (bandit)","security (secret-scanning)","security (config-check)","security (tfscan)","integration","terraform-check"]},enforce_admins:true,required_pull_request_reviews:{enabled:true,dismiss_stale_reviews:true,require_code_owner_reviews:true,required_approving_review_count:1,require_last_push_approval:false},restrictions:null,required_conversation_resolution:true,allow_force_pushes:false,allow_deletions:false,required_linear_history:true}')"
   gh api --method PUT "repos/$REPO/branches/main/protection" --input - <<<"$body" >/dev/null
-  printf 'Main branch protection hardened. Add a second maintainer to enforce one independent approval.\n'
+  printf 'Main branch protection configured: 1 required approval, code owners review, and the 11 required status checks.\n'
 }
 
 seed() {

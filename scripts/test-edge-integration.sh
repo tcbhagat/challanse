@@ -20,7 +20,8 @@ grep -qE '^\[\[kv_namespaces\]\]' apps/edge/wrangler.toml || {
   echo "Missing KV bindings: the Worker needs key-value storage." >&2
   exit 1
 }
-grep -qE '^\[\[queues\]\]' apps/edge/wrangler.toml || {
+# Current wrangler syntax is [[queues.producers]]; accept both for robustness.
+grep -qE '^\[\[queues(\]\]|\.producers\]\])' apps/edge/wrangler.toml || {
   echo "Missing Queue bindings: the Worker needs async queues." >&2
   exit 1
 }

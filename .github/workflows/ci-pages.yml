@@ -282,8 +282,14 @@ jobs:
           if-no-files-found: error
 
   deploy-landing:
-    # Cloudflare Pages deployment for the landing site (challanse.constrovet.com)
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.PILOT_DEPLOY_ENABLED == 'true'
+    # GitHub Pages deployment of the INFORMATIONAL landing site
+    # (challanse.constrovet.com). This job only builds the static landing,
+    # configures Pages, uploads dist/landing, and deploys Pages. It has no
+    # application/API dependency, no invoice upload, and no secret dependency.
+    # It intentionally does NOT depend on PILOT_DEPLOY_ENABLED so the
+    # informational landing can be published from protected green main even
+    # while the pilot flag is false.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: [validate, android, enrichment, security]
     runs-on: ubuntu-latest
     permissions:
@@ -305,6 +311,8 @@ jobs:
           CHALLANSE_API_BASE_URL: https://api.challanse.constrovet.com
           TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
           CHALLANSE_CUSTOM_DOMAIN: challanse.constrovet.com
+      - name: Copy CNAME into Pages artifact
+        run: cp CNAME dist/landing/CNAME
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
@@ -350,7 +358,7 @@ jobs:
         run: |
           # Source the resource IDs created by setup-cloudflare.sh
           set -a; source .cloudflare/resources.env; set +a
-          node scripts/render-edge-config.mjs
+          node scripts/render-edge-config.mjs --production
         env:
           CLOUDFLARE_ACCESS_TEAM_DOMAIN: ${{ vars.CLOUDFLARE_ACCESS_TEAM_DOMAIN }}
           CLOUDFLARE_ACCESS_AUD: ${{ vars.CLOUDFLARE_ACCESS_AUD }}
@@ -365,9 +373,9 @@ jobs:
       # Configure API Worker secrets
       - name: Configure Worker secrets — Access & Turnstile
         run: |
-          printf '%s' "$TURNSTILE_SECRET" | npx wrangler secret put TURNSTILE_SECRET --config apps/edge/wrangler.generated.toml
-          printf '%s' "$DEVICE_TOKEN_PEPPER" | npx wrangler secret put DEVICE_TOKEN_PEPPER --config apps/edge/wrangler.generated.toml
-          printf '%s' "$SESSION_ENCRYPTION_KEY" | npx wrangler secret put SESSION_ENCRYPTION_KEY --config apps/edge/wrangler.generated.toml
+          printf '%s' "$TURNSTILE_SECRET" | npx wrangler secret put TURNSTILE_SECRET --config apps/edge/config/edge.production.toml
+          printf '%s' "$DEVICE_TOKEN_PEPPER" | npx wrangler secret put DEVICE_TOKEN_PEPPER --config apps/edge/config/edge.production.toml
+          printf '%s' "$SESSION_ENCRYPTION_KEY" | npx wrangler secret put SESSION_ENCRYPTION_KEY --config apps/edge/config/edge.production.toml
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -377,9 +385,9 @@ jobs:
 
       - name: Configure Worker secrets — HMAC & enrichment proxy
         run: |
-          printf '%s' "$EDGE_TO_ENRICHMENT_HMAC_KEY" | npx wrangler secret put EDGE_TO_ENRICHMENT_HMAC_KEY --config apps/edge/wrangler.generated.toml
-          printf '%s' "$EDGE_TO_ENRICHMENT_NEXT_HMAC_KEY" | npx wrangler secret put EDGE_TO_ENRICHMENT_NEXT_HMAC_KEY --config apps/edge/wrangler.generated.toml
-          printf '%s' "$TENANT_CONTEXT_HMAC_KEY" | npx wrangler secret put TENANT_CONTEXT_HMAC_KEY --config apps/edge/wrangler.generated.toml
+          printf '%s' "$EDGE_TO_ENRICHMENT_HMAC_KEY" | npx wrangler secret put EDGE_TO_ENRICHMENT_HMAC_KEY --config apps/edge/config/edge.production.toml
+          printf '%s' "$EDGE_TO_ENRICHMENT_NEXT_HMAC_KEY" | npx wrangler secret put EDGE_TO_ENRICHMENT_NEXT_HMAC_KEY --config apps/edge/config/edge.production.toml
+          printf '%s' "$TENANT_CONTEXT_HMAC_KEY" | npx wrangler secret put TENANT_CONTEXT_HMAC_KEY --config apps/edge/config/edge.production.toml
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -389,8 +397,8 @@ jobs:
 
       - name: Configure Worker secrets — xAI Grok & agentmemory
         run: |
-          printf '%s' "$XAI_API_KEY" | npx wrangler secret put XAI_API_KEY --config apps/edge/wrangler.generated.toml
-          printf '%s' "$AGENTMEMORY_API_KEY" | npx wrangler secret put AGENTMEMORY_API_KEY --config apps/edge/wrangler.generated.toml
+          printf '%s' "$XAI_API_KEY" | npx wrangler secret put XAI_API_KEY --config apps/edge/config/edge.production.toml
+          printf '%s' "$AGENTMEMORY_API_KEY" | npx wrangler secret put AGENTMEMORY_API_KEY --config apps/edge/config/edge.production.toml
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -399,7 +407,7 @@ jobs:
 
       - name: Configure Worker secrets — Play Integrity
         run: |
-          printf '%s' "$PLAY_INTEGRITY_CREDENTIALS_JSON" | npx wrangler secret put PLAY_INTEGRITY_CREDENTIALS_JSON --config apps/edge/wrangler.generated.toml
+          printf '%s' "$PLAY_INTEGRITY_CREDENTIALS_JSON" | npx wrangler secret put PLAY_INTEGRITY_CREDENTIALS_JSON --config apps/edge/config/edge.production.toml
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -407,7 +415,7 @@ jobs:
 
       # Deploy API Worker (now the full backend, not just a proxy)
       - name: Deploy API Worker
-        run: npx wrangler deploy --config apps/edge/wrangler.generated.toml
+        run: npx wrangler deploy --config apps/edge/config/edge.production.toml
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
