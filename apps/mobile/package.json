@@ -16,7 +16,8 @@
     "check": "tsc --noEmit",
     "build": "cd android && ./gradlew assembleDebug",
     "build:release": "cd android && ./gradlew bundleRelease",
-    "build:local-pilot": "cd android && ./gradlew assembleLocalPilot"
+    "build:local-pilot": "cd android && ./gradlew assembleLocalPilot",
+    "build:client-pilot": "cd android && ./gradlew assembleClientPilot"
   },
   "dependencies": {
     "@babel/runtime": "7.29.7",

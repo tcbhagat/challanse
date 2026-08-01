@@ -91,6 +91,7 @@ from .local_auth import (
     login_page,
     logout as logout_local_reviewer,
     parse_login_form,
+    safe_local_next_path,
     validate_session,
 )
 from .pilot_control import PilotControlError, require_capture_enabled
@@ -268,7 +269,7 @@ def authoritative_local_auth(request: Request, settings=Depends(get_settings)) -
             request.headers.get("X-Forwarded-Method", request.method),
         )
     except LocalAuthError:
-        next_path = request.headers.get("X-Forwarded-Uri", "/")
+        next_path = safe_local_next_path(request.headers.get("X-Forwarded-Uri", "/"))
         return RedirectResponse(url=f"/login?next={quote(next_path, safe='/')}", status_code=303)
     return Response(
         status_code=204,
@@ -298,7 +299,7 @@ async def local_login(request: Request, settings=Depends(get_settings)) -> Respo
         token, csrf, _identity = authenticate_local_reviewer(settings, email, password, second_factor)
     except (LocalAuthError, UnicodeDecodeError, ValueError):
         return HTMLResponse(login_page("Sign-in failed or the account is temporarily locked."), status_code=401, headers={"Cache-Control": "no-store"})
-    safe_next = next_path if next_path.startswith("/") and not next_path.startswith("//") else "/"
+    safe_next = safe_local_next_path(next_path)
     response = RedirectResponse(url=safe_next, status_code=303)
     max_age = settings.local_session_ttl_minutes * 60
     response.set_cookie(SESSION_COOKIE, token, max_age=max_age, secure=True, httponly=True, samesite="strict", path="/")

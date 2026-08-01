@@ -92,6 +92,10 @@ if contains_forbidden -RInE --exclude='test-production-config.sh' --exclude='loc
 fi
 assert "android app must use the .localpilot applicationId suffix" \
   grep -Fq 'applicationIdSuffix ".localpilot"' apps/mobile/android/app/build.gradle
+assert "android app must use a separate .clientpilot applicationId suffix" \
+  grep -Fq 'applicationIdSuffix ".clientpilot"' apps/mobile/android/app/build.gradle
+assert "client pilot builds must use dedicated signing credentials" \
+  grep -Fq 'CHALLANSE_CLIENT_KEYSTORE_FILE' apps/mobile/android/app/build.gradle
 assert "mobile pilot app must contain the SYNTHETIC TEST marker" grep -Fq 'SYNTHETIC TEST' apps/mobile/src/PilotApp.tsx
 assert "mobile pilot app must contain the CONTROLLED CLIENT PILOT marker" grep -Fq 'CONTROLLED CLIENT PILOT' apps/mobile/src/PilotApp.tsx
 assert "enrichment local auth must use the hardened Argon2 parameters" \
@@ -100,6 +104,14 @@ assert "pilot control must restore verified tenants within 30 days" \
   grep -Fq 'restoreVerifiedWithin30Days' services/enrichment/app/pilot_control.py
 assert "pilot control must back up encrypted evidence within 24 hours" \
   grep -Fq 'encryptedBackupWithin24Hours' services/enrichment/app/pilot_control.py
+assert "pilot activation must persist Android field evidence" \
+  grep -Fq 'android_field_sha256' services/enrichment/app/pilot_control.py
+assert "pilot activation must persist operations acceptance evidence" \
+  grep -Fq 'operations_acceptance_sha256' services/enrichment/app/pilot_control.py
+assert "pilot activation must persist the readiness manifest" \
+  grep -Fq 'readiness_manifest_sha256' services/enrichment/app/pilot_control.py
+assert "local-pilot.sh must expose the fail-closed client readiness gate" \
+  grep -Fq 'client-readiness' scripts/local-pilot.sh
 assert "quality-loop.sh must enforce the AWS deployment freeze" \
   grep -Fq 'AWS_DEPLOYMENT_FROZEN must equal true' scripts/quality-loop.sh
 assert "quality gates must list only human-only actions" grep -Fq 'humanOnlyActions' quality/gates.json

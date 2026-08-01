@@ -27,6 +27,9 @@ def main() -> None:
             client_approval_sha256=str(payload["clientApprovalSha256"]),
             security_review_sha256=str(payload["securityReviewSha256"]),
             backup_restore_sha256=str(payload["backupRestoreSha256"]),
+            android_field_sha256=str(payload["androidFieldSha256"]),
+            operations_acceptance_sha256=str(payload["operationsAcceptanceSha256"]),
+            readiness_manifest_sha256=str(payload["readinessManifestSha256"]),
             confirmation="ACTIVATE CONTROLLED CLIENT PILOT",
         )
         print('{"status":"controlled-client-pilot"}')

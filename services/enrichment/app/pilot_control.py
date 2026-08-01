@@ -191,11 +191,21 @@ def activate_controlled_pilot(
     client_approval_sha256: str,
     security_review_sha256: str,
     backup_restore_sha256: str,
+    android_field_sha256: str,
+    operations_acceptance_sha256: str,
+    readiness_manifest_sha256: str,
     confirmation: str,
 ) -> None:
     if confirmation != "ACTIVATE CONTROLLED CLIENT PILOT":
         raise PilotControlError("activation_confirmation_invalid")
-    hashes = (client_approval_sha256, security_review_sha256, backup_restore_sha256)
+    hashes = (
+        client_approval_sha256,
+        security_review_sha256,
+        backup_restore_sha256,
+        android_field_sha256,
+        operations_acceptance_sha256,
+        readiness_manifest_sha256,
+    )
     if not all(SHA256_PATTERN.fullmatch(value) for value in hashes):
         raise PilotControlError("activation_evidence_hash_invalid")
     if not 1 <= retention_days <= 30:
@@ -212,11 +222,22 @@ def activate_controlled_pilot(
             UPDATE local_pilot_control SET
               mode = 'controlled-client-pilot', retention_days = %s,
               client_approval_sha256 = %s, security_review_sha256 = %s,
-              backup_restore_sha256 = %s, activated_at = NOW(), activated_by = %s, updated_at = NOW()
+              backup_restore_sha256 = %s, android_field_sha256 = %s,
+              operations_acceptance_sha256 = %s, readiness_manifest_sha256 = %s,
+              activated_at = NOW(), activated_by = %s, updated_at = NOW()
             WHERE singleton AND mode = 'synthetic-demo'
             RETURNING mode
             """,
-            (retention_days, client_approval_sha256, security_review_sha256, backup_restore_sha256, operator["id"]),
+            (
+                retention_days,
+                client_approval_sha256,
+                security_review_sha256,
+                backup_restore_sha256,
+                android_field_sha256,
+                operations_acceptance_sha256,
+                readiness_manifest_sha256,
+                operator["id"],
+            ),
         ).fetchone()
         if not result:
             raise PilotControlError("pilot_already_activated")
@@ -261,6 +282,8 @@ def purge_ended_pilot(settings: Settings, *, confirmation: str) -> None:
             """
             UPDATE local_pilot_control SET mode = 'synthetic-demo', client_approval_sha256 = NULL,
               security_review_sha256 = NULL, backup_restore_sha256 = NULL,
+              android_field_sha256 = NULL, operations_acceptance_sha256 = NULL,
+              readiness_manifest_sha256 = NULL,
               client_configuration_sha256 = NULL, activated_at = NULL, activated_by = NULL,
               ended_at = NULL, ended_by = NULL, updated_at = NOW()
             WHERE singleton

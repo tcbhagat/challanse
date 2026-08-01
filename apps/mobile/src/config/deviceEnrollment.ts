@@ -27,9 +27,17 @@ type EnrollmentCredential = {
   deviceToken: string;
 };
 
-export const IS_LOCAL_PILOT = (typeof DeviceInfo.getBundleId === 'function' ? DeviceInfo.getBundleId() : 'com.constrovet.challanse').endsWith('.localpilot');
-const CREDENTIAL_SERVICE = IS_LOCAL_PILOT ? 'com.constrovet.challanse.localpilot.device' : 'com.constrovet.challanse.device';
-const CONFIGURATION_SERVICE = IS_LOCAL_PILOT ? 'com.constrovet.challanse.localpilot.configuration' : 'com.constrovet.challanse.configuration';
+const BUNDLE_ID = typeof DeviceInfo.getBundleId === 'function' ? DeviceInfo.getBundleId() : 'com.constrovet.challanse';
+export const IS_CLIENT_PILOT = BUNDLE_ID.endsWith('.clientpilot');
+export const IS_LOCAL_PILOT = IS_CLIENT_PILOT || BUNDLE_ID.endsWith('.localpilot');
+const CREDENTIAL_SERVICE = `${BUNDLE_ID}.device`;
+const CONFIGURATION_SERVICE = `${BUNDLE_ID}.configuration`;
+
+export function enrollmentProtocolForBundleId(bundleId: string): string {
+  if (bundleId.endsWith('.clientpilot')) return 'challanse-client:';
+  if (bundleId.endsWith('.localpilot')) return 'challanse-local:';
+  return 'challanse:';
+}
 
 async function storeJson(service: string, value: unknown): Promise<void> {
   await Keychain.setGenericPassword('challanse', JSON.stringify(value), {
@@ -52,7 +60,7 @@ async function readJson<T>(service: string): Promise<T | null> {
 export function parseEnrollmentLink(url: string): { apiBaseUrl: string; enrollmentCode: string } | null {
   try {
     const parsed = new URL(url);
-    const expectedProtocol = IS_LOCAL_PILOT ? 'challanse-local:' : 'challanse:';
+    const expectedProtocol = enrollmentProtocolForBundleId(BUNDLE_ID);
     if (parsed.protocol !== expectedProtocol || parsed.hostname !== 'enroll') return null;
     const apiBaseUrl = parsed.searchParams.get('api')?.replace(/\/$/, '') ?? '';
     const enrollmentCode = parsed.searchParams.get('code')?.toUpperCase() ?? '';

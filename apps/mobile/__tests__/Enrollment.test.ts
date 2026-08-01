@@ -1,4 +1,4 @@
-import { parseEnrollmentLink } from '../src/config/deviceEnrollment';
+import { enrollmentProtocolForBundleId, parseEnrollmentLink } from '../src/config/deviceEnrollment';
 
 describe('device enrollment links', () => {
   it('accepts a branded HTTPS API and one-time code', () => {
@@ -11,5 +11,11 @@ describe('device enrollment links', () => {
   it('rejects insecure and malformed enrollment links', () => {
     expect(parseEnrollmentLink('challanse://enroll?api=http%3A%2F%2Flocalhost&code=ABCDEFGH')).toBeNull();
     expect(parseEnrollmentLink('https://example.com')).toBeNull();
+  });
+
+  it('keeps synthetic, controlled-client, and production enrollment schemes separate', () => {
+    expect(enrollmentProtocolForBundleId('com.constrovet.challanse.localpilot')).toBe('challanse-local:');
+    expect(enrollmentProtocolForBundleId('com.constrovet.challanse.clientpilot')).toBe('challanse-client:');
+    expect(enrollmentProtocolForBundleId('com.constrovet.challanse')).toBe('challanse:');
   });
 });

@@ -9,6 +9,9 @@ EDGE_VARS="$CONFIG_ROOT/edge.dev.vars"
 REVIEWER_VARS="$CONFIG_ROOT/reviewer.dev.vars"
 TLS_DIR="$CONFIG_ROOT/tls"
 RESTIC_PASSWORD_FILE="$CONFIG_ROOT/restic-password"
+CLIENT_SIGNING_DIR="$CONFIG_ROOT/client-signing"
+CLIENT_SIGNING_ENV="$CLIENT_SIGNING_DIR/signing.env"
+CLIENT_KEYSTORE="$CLIENT_SIGNING_DIR/challanse-client-pilot.jks"
 DATA_ROOT="/mnt/challanse-data"
 LEGACY_DATA_ROOT="/srv/challanse"
 CONTAINER_DATA_ROOT="/srv/challanse"
@@ -21,6 +24,7 @@ CONTAINER_FILE="$HOST_MOUNT/challanse-local.luks"
 CONTAINER_SIZE="20G"
 CONTAINER_SIZE_BYTES="21474836480"
 MAPPER_NAME="challanse-local"
+CLIENT_READINESS_DIR="$DATA_ROOT/exports/client-readiness"
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"; }
@@ -612,6 +616,7 @@ provision() {
     generate_ca "$lan_ip"
   fi
   cp "$TLS_DIR/pilot-ca.crt" "$ROOT/apps/mobile/android/app/src/localPilot/res/raw/challanse_pilot_ca.crt"
+  cp "$TLS_DIR/pilot-ca.crt" "$ROOT/apps/mobile/android/app/src/clientPilot/res/raw/challanse_pilot_ca.crt"
   python3 "$ROOT/scripts/generate-local-fixtures.py" "$DATA_ROOT/fixtures"
   (cd "$ROOT" && CI=true npm run build --workspace @challanse/reviewer)
   (cd "$ROOT" && CI=true npm run build:local-pilot --workspace @challanse/mobile)
@@ -637,6 +642,7 @@ prepare_client_pilot() {
   load_env
   local configuration_file="${1:-}"
   [[ -n "$configuration_file" && -f "$configuration_file" ]] || die "Use: ./scripts/local-pilot.sh prepare-client /secure/client-pilot.json"
+  client_preparation_gate
   confirm_phrase "This deletes all synthetic server records and prepares one client configuration. " "PREPARE-CONTROLLED-CLIENT-PILOT"
   compose exec -T api python -m app.local_pilot_control_cli prepare <"$configuration_file"
   printf 'Client configuration prepared. Enroll exactly two reviewers, complete backup restore and security evidence, then activate.\n'
@@ -644,13 +650,18 @@ prepare_client_pilot() {
 activate_client_pilot() {
   require_encrypted_storage
   load_env
-  local approval_file="${1:-}" security_file="${2:-}" restore_file="${3:-}"
-  local operator_email retention_days payload
-  [[ -f "$approval_file" && -f "$security_file" && -f "$restore_file" ]] \
-    || die "Use: ./scripts/local-pilot.sh activate-client-pilot CLIENT_APPROVAL SECURITY_REVIEW RESTORE_EVIDENCE"
+  local approval_file="$CLIENT_READINESS_DIR/client-acceptance.json"
+  local security_file="$CLIENT_READINESS_DIR/security-acceptance.json"
+  local android_file="$CLIENT_READINESS_DIR/android-field-acceptance.json"
+  local operations_file="$CLIENT_READINESS_DIR/operations-acceptance.json"
+  local restore_file readiness_file operator_email retention_days payload
+  client_readiness
+  readiness_file="$CLIENT_READINESS_DIR/readiness-manifest.json"
+  restore_file="$(find "$DATA_ROOT/exports" -maxdepth 1 -type f -name 'backup-restore-*.json' -printf '%T@ %p\n' | sort -nr | head -n 1 | cut -d' ' -f2-)"
+  [[ -f "$restore_file" ]] || die "Verified restore evidence is missing."
   read -r -p 'Activating reviewer email: ' operator_email
-  read -r -p 'Retention days [30, maximum 30]: ' retention_days
-  retention_days="${retention_days:-30}"
+  retention_days="$(jq -r '.retention_days' "$approval_file")"
+  printf 'Signed client retention: %s days.\n' "$retention_days"
   [[ "$retention_days" =~ ^[0-9]+$ && "$retention_days" -ge 1 && "$retention_days" -le 30 ]] || die "Retention must be between 1 and 30 days."
   confirm_phrase "Activate real client data mode with no uptime SLA? " "ACTIVATE-CONTROLLED-CLIENT-PILOT"
   payload="$(jq -nc \
@@ -659,7 +670,10 @@ activate_client_pilot() {
     --arg clientApprovalSha256 "$(sha256sum "$approval_file" | awk '{print $1}')" \
     --arg securityReviewSha256 "$(sha256sum "$security_file" | awk '{print $1}')" \
     --arg backupRestoreSha256 "$(sha256sum "$restore_file" | awk '{print $1}')" \
-    '{operatorEmail:$operatorEmail,retentionDays:$retentionDays,clientApprovalSha256:$clientApprovalSha256,securityReviewSha256:$securityReviewSha256,backupRestoreSha256:$backupRestoreSha256}')"
+    --arg androidFieldSha256 "$(sha256sum "$android_file" | awk '{print $1}')" \
+    --arg operationsAcceptanceSha256 "$(sha256sum "$operations_file" | awk '{print $1}')" \
+    --arg readinessManifestSha256 "$(sha256sum "$readiness_file" | awk '{print $1}')" \
+    '{operatorEmail:$operatorEmail,retentionDays:$retentionDays,clientApprovalSha256:$clientApprovalSha256,securityReviewSha256:$securityReviewSha256,backupRestoreSha256:$backupRestoreSha256,androidFieldSha256:$androidFieldSha256,operationsAcceptanceSha256:$operationsAcceptanceSha256,readinessManifestSha256:$readinessManifestSha256}')"
   printf '%s' "$payload" | compose exec -T api python -m app.local_pilot_control_cli activate
 }
 end_client_pilot() {
@@ -753,14 +767,29 @@ test_data() {
 enroll() {
   require_encrypted_storage
   load_env
-  local output code api_base link device_name
-  read -r -p 'Device name [Synthetic Pilot Device]: ' device_name
-  device_name="${device_name:-Synthetic Pilot Device}"
+  local requested_build="${1:-}" output code api_base link device_name pilot_mode scheme default_name status_json
+  status_json="$(compose exec -T api python -c 'import json; from app.config import get_settings; from app.local_admin import local_status; print(json.dumps(local_status(get_settings())))')"
+  pilot_mode="$(jq -r '.pilotMode' <<<"$status_json")"
+  if [[ "$requested_build" == "--client-pilot" ]]; then
+    [[ "$pilot_mode" == "synthetic-demo" ]] || die "The client-pilot test enrollment override is only valid in synthetic-demo mode."
+    scheme="challanse-client"
+    default_name="Client Pilot Acceptance Device"
+  elif [[ -n "$requested_build" ]]; then
+    die "Use enroll or enroll --client-pilot."
+  elif [[ "$pilot_mode" == "controlled-client-pilot" ]]; then
+    scheme="challanse-client"
+    default_name="Client Pilot Device"
+  else
+    scheme="challanse-local"
+    default_name="Synthetic Pilot Device"
+  fi
+  read -r -p "Device name [$default_name]: " device_name
+  device_name="${device_name:-$default_name}"
   output="$(compose exec -T -e LOCAL_DEVICE_NAME="$device_name" api python -m app.local_enroll)"
   code="$(sed -n 's/^enrollment_code=\([^ ]*\).*/\1/p' <<<"$output")"
   [[ -n "$code" ]] || die "Enrollment code could not be generated."
   api_base="https://$CHALLANSE_LAN_IP:8443"
-  link="challanse-local://enroll?api=$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$api_base")&code=$code"
+  link="$scheme://enroll?api=$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$api_base")&code=$code"
   printf 'Enrollment expires in 10 minutes. Open this link on the pilot device:\n%s\n' "$link"
 }
 status_cmd() {
@@ -795,6 +824,252 @@ config_check() {
   load_env
   compose config --quiet
   printf 'Local Compose configuration is valid with frozen AWS controls.\n'
+}
+prepare_client_signing() {
+  require_aws_freeze
+  need keytool
+  if [[ -e "$CLIENT_KEYSTORE" || -e "$CLIENT_SIGNING_ENV" ]]; then
+    [[ -f "$CLIENT_KEYSTORE" && -f "$CLIENT_SIGNING_ENV" ]] \
+      || die "Client-pilot signing state is incomplete. Do not regenerate or overwrite it."
+    [[ "$(stat -c '%a' "$CLIENT_KEYSTORE")" == "600" && "$(stat -c '%a' "$CLIENT_SIGNING_ENV")" == "600" ]] \
+      || die "Client-pilot signing files must use mode 600."
+    set -a
+    # shellcheck disable=SC1090
+    source "$CLIENT_SIGNING_ENV"
+    set +a
+    keytool -list -keystore "$CLIENT_KEYSTORE" -storepass:env CHALLANSE_CLIENT_KEYSTORE_PASSWORD \
+      -alias "$CHALLANSE_CLIENT_KEY_ALIAS" >/dev/null \
+      || die "Existing client-pilot signing identity cannot be opened. Preserve it and investigate before rebuilding."
+    printf 'Existing client-pilot signing identity preserved.\n'
+    return
+  fi
+  confirm_phrase "Create a dedicated local client-pilot signing identity outside Git. " "CREATE-CLIENT-PILOT-SIGNING-IDENTITY"
+  mkdir -p "$CLIENT_SIGNING_DIR"
+  chmod 700 "$CLIENT_SIGNING_DIR"
+  local store_password key_password alias_name="challanse-client-pilot"
+  store_password="$(openssl rand -hex 32)"
+  key_password="$store_password"
+  export CHALLANSE_CLIENT_STORE_PASSWORD="$store_password" CHALLANSE_CLIENT_KEY_PASSWORD_VALUE="$key_password"
+  keytool -genkeypair -noprompt \
+    -keystore "$CLIENT_KEYSTORE" \
+    -storepass:env CHALLANSE_CLIENT_STORE_PASSWORD \
+    -keypass:env CHALLANSE_CLIENT_KEY_PASSWORD_VALUE \
+    -alias "$alias_name" -keyalg RSA -keysize 3072 -validity 3650 \
+    -dname "CN=ChallanSe Controlled Client Pilot,OU=Pilot,O=Constrovet,C=IN" >/dev/null
+  unset CHALLANSE_CLIENT_STORE_PASSWORD CHALLANSE_CLIENT_KEY_PASSWORD_VALUE
+  {
+    printf 'CHALLANSE_CLIENT_KEYSTORE_FILE=%q\n' "$CLIENT_KEYSTORE"
+    printf 'CHALLANSE_CLIENT_KEYSTORE_PASSWORD=%q\n' "$store_password"
+    printf 'CHALLANSE_CLIENT_KEY_ALIAS=%q\n' "$alias_name"
+    printf 'CHALLANSE_CLIENT_KEY_PASSWORD=%q\n' "$key_password"
+  } >"$CLIENT_SIGNING_ENV"
+  chmod 600 "$CLIENT_KEYSTORE" "$CLIENT_SIGNING_ENV"
+  unset store_password key_password
+  printf 'Dedicated client-pilot signing identity created under %s. Back it up encrypted before client use.\n' "$CLIENT_SIGNING_DIR"
+}
+build_client_apk() {
+  require_aws_freeze
+  require_encrypted_storage
+  [[ -f "$CLIENT_SIGNING_ENV" && -f "$CLIENT_KEYSTORE" ]] \
+    || die "Run prepare-client-signing first."
+  [[ -f "$TLS_DIR/pilot-ca.crt" ]] || die "Pilot CA is missing. Run provision first."
+  [[ -z "$(git status --porcelain --untracked-files=no)" ]] \
+    || die "Tracked source changes are uncommitted. Build the client APK only from a committed revision."
+  set -a
+  # shellcheck disable=SC1090
+  source "$CLIENT_SIGNING_ENV"
+  set +a
+  cp "$TLS_DIR/pilot-ca.crt" "$ROOT/apps/mobile/android/app/src/clientPilot/res/raw/challanse_pilot_ca.crt"
+  (cd "$ROOT" && CI=true npm run build:client-pilot --workspace @challanse/mobile)
+  download_client_apk
+}
+download_client_apk() {
+  local apk="$ROOT/apps/mobile/android/app/build/outputs/apk/clientPilot/app-clientPilot.apk"
+  local destination="$ROOT/artifacts/client-pilot/ChallanSe-Client-Pilot.apk"
+  local manifest="$ROOT/artifacts/client-pilot/manifest.json"
+  local android_sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}}"
+  local apksigner="$android_sdk/build-tools/36.0.0/apksigner"
+  [[ -f "$apk" ]] || die "Client pilot APK is not built yet."
+  [[ -x "$apksigner" ]] || die "Android apksigner 36.0.0 is unavailable."
+  mkdir -p "$ROOT/artifacts/client-pilot"
+  cp "$apk" "$destination"
+  local apk_sha certificate_sha api_origin
+  apk_sha="$(sha256sum "$destination" | awk '{print $1}')"
+  certificate_sha="$($apksigner verify --print-certs "$destination" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1)"
+  [[ "$certificate_sha" =~ ^[a-f0-9]{64}$ ]] || die "Client APK signing certificate fingerprint could not be verified."
+  load_env
+  api_origin="${PUBLIC_API_URL:-}"
+  [[ "$api_origin" == https://* ]] || die "Client APK API origin must use HTTPS."
+  jq -n \
+    --arg commitSha "$(git rev-parse HEAD)" \
+    --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg apkSha256 "$apk_sha" \
+    --arg certificateSha256 "$certificate_sha" \
+    --arg apiOrigin "$api_origin" \
+    '{schemaVersion:"1.0",commitSha:$commitSha,generatedAt:$generatedAt,apkSha256:$apkSha256,certificateSha256:$certificateSha256,apiOrigin:$apiOrigin,pilotMode:"controlled-client-pilot",applicationId:"com.constrovet.challanse.clientpilot"}' \
+    >"$manifest"
+  printf '%s  %s\n' "$apk_sha" "$destination"
+  printf 'Manifest: %s\n' "$manifest"
+}
+validate_client_evidence() {
+  local kind="$1" file="$2"
+  case "$kind" in
+    client-acceptance)
+      jq -e '
+        .schema_version == "1.0" and .controlled_rollout_accepted == true and
+        .privacy_notice_accepted == true and .supervised_hours_accepted == true and
+        .backup_limitations_accepted == true and .support_limits_accepted == true and
+        (.retention_days >= 1 and .retention_days <= 30) and
+        (.accepted_by | type == "string" and length > 0) and
+        (.accepted_at | type == "string" and length > 0)
+      ' "$file" >/dev/null || die "Client acceptance evidence is incomplete."
+      ;;
+    security-acceptance)
+      jq -e '
+        .schema_version == "1.0" and .owasp_masvs_review_completed == true and
+        .owasp_api_review_completed == true and .unresolved_critical_findings == 0 and
+        .unresolved_high_findings == 0 and (.evidence_owner | length > 0) and
+        (.completed_at | length > 0)
+      ' "$file" >/dev/null || die "Security acceptance evidence is incomplete or has blocking findings."
+      ;;
+    android-field-acceptance)
+      jq -e '
+        .schema_version == "1.0" and .android_api_level == 26 and .device_ram_mb <= 2048 and
+        .binary_writes >= 100 and .minimum_image_bytes >= 500000 and
+        .maximum_image_bytes >= .minimum_image_bytes and .p95_write_ms < 50 and
+        .metadata_loss_count == 0 and .sqlcipher_status_verified == true and
+        .wrong_key_rejected == true and .raw_database_scan_clean == true and
+        .restart_recovery_passed == true and .reboot_sync_passed == true and
+        .interrupted_upload_resume_passed == true and (.evidence_owner | length > 0) and
+        (.completed_at | length > 0)
+      ' "$file" >/dev/null || die "Android field acceptance evidence does not meet the controlled-pilot gate."
+      ;;
+    operations-acceptance)
+      jq -e '
+        .schema_version == "1.0" and (.ups_ready == true or .supervised_power_limitation_accepted == true) and
+        (.incident_contact | length > 0) and (.support_hours | length > 0) and
+        (.operator_name | length > 0) and (.completed_at | length > 0)
+      ' "$file" >/dev/null || die "Operations acceptance evidence is incomplete."
+      ;;
+    *) die "Evidence type must be client-acceptance, security-acceptance, android-field-acceptance, or operations-acceptance." ;;
+  esac
+}
+record_client_evidence() {
+  require_encrypted_storage
+  local kind="${1:-}" source_file="${2:-}"
+  [[ -f "$source_file" && ! -L "$source_file" ]] || die "Use: ./scripts/local-pilot.sh record-client-evidence TYPE FILE"
+  validate_client_evidence "$kind" "$source_file"
+  mkdir -p "$CLIENT_READINESS_DIR"
+  install -m 600 "$source_file" "$CLIENT_READINESS_DIR/$kind.json"
+  printf 'Recorded encrypted %s evidence with SHA-256 %s.\n' "$kind" "$(sha256sum "$CLIENT_READINESS_DIR/$kind.json" | awk '{print $1}')"
+}
+client_evidence_files_ready() {
+  local kind file
+  for kind in client-acceptance security-acceptance android-field-acceptance operations-acceptance; do
+    file="$CLIENT_READINESS_DIR/$kind.json"
+    [[ -f "$file" && ! -L "$file" ]] || return 1
+    validate_client_evidence "$kind" "$file" || return 1
+  done
+}
+code_security_gate() {
+  local alerts
+  alerts="$(gh api "repos/$REPO/code-scanning/alerts?state=open&per_page=100")" || return 1
+  jq -e '[.[] | select(.rule.security_severity_level == "critical" or .rule.security_severity_level == "high")] | length == 0' \
+    <<<"$alerts" >/dev/null
+}
+latest_synthetic_evidence() {
+  find "$DATA_ROOT/exports" -maxdepth 1 -type d -name 'evidence-*' -mmin -1440 -printf '%T@ %p\n' \
+    | sort -nr | head -n 1 | cut -d' ' -f2-
+}
+client_apk_manifest_valid() {
+  local manifest="$ROOT/artifacts/client-pilot/manifest.json"
+  local apk="$ROOT/artifacts/client-pilot/ChallanSe-Client-Pilot.apk"
+  [[ -f "$manifest" && -f "$apk" ]] || return 1
+  jq -e --arg commit "$(git rev-parse HEAD)" --arg apkSha "$(sha256sum "$apk" | awk '{print $1}')" '
+    .schemaVersion == "1.0" and .pilotMode == "controlled-client-pilot" and
+    .applicationId == "com.constrovet.challanse.clientpilot" and
+    .commitSha == $commit and .apkSha256 == $apkSha and
+    (.certificateSha256 | test("^[a-f0-9]{64}$")) and (.apiOrigin | startswith("https://"))
+  ' "$manifest" >/dev/null
+}
+synthetic_evidence_valid() {
+  local evidence
+  evidence="$(latest_synthetic_evidence)"
+  [[ -n "$evidence" && -f "$evidence/acceptance-report.json" && -f "$evidence/commit-sha.txt" ]] || return 1
+  jq -e '.synthetic == true and .receiptCount == 50 and .uniqueReceiptCount == 50 and .passed == true' \
+    "$evidence/acceptance-report.json" >/dev/null || return 1
+  [[ "$(tr -d '[:space:]' <"$evidence/commit-sha.txt")" == "$(git rev-parse HEAD)" ]]
+}
+client_preparation_gate() {
+  require_encrypted_storage
+  [[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "Tracked source must be committed before client preparation."
+  client_evidence_files_ready || die "Record all four validated client evidence files before preparing client data."
+  code_security_gate || die "Open critical/high CodeQL findings or unavailable security evidence block client preparation."
+  synthetic_evidence_valid || die "A successful synthetic evidence pack for this commit from the last 24 hours is required."
+  client_apk_manifest_valid || die "The controlled-client APK manifest is missing, stale, or mismatched."
+}
+readiness_line() {
+  local label="$1" result="$2"
+  if [[ "$result" == "true" ]]; then
+    printf 'PASS  %s\n' "$label"
+  else
+    printf 'FAIL  %s\n' "$label"
+  fi
+}
+client_readiness() {
+  require_aws_freeze
+  require_encrypted_storage
+  load_env
+  local status_json evidence status_ok reviewers_ok configuration_ok backup_ok restore_ok
+  local acceptance_ok client_apk_ok security_ok evidence_files_ok source_ok passed=true
+  status_json="$(compose exec -T api python -c 'import json; from app.config import get_settings; from app.local_admin import local_status; print(json.dumps(local_status(get_settings())))')" \
+    || die "Local services are unavailable. Start the LAN stack first."
+  status_ok="$(jq -r '(.database == "ready" and .objectStore == "ready" and .ollama == "ready" and .tesseract == "ready" and .terminalFailures == 0 and .auditChain.valid == true and (.storage.uploadsPaused | not) and .certificate.status == "ready")' <<<"$status_json")"
+  reviewers_ok="$(jq -r '.activation.checks.twoMfaReviewers == true' <<<"$status_json")"
+  configuration_ok="$(jq -r '(.activation.checks.singleActiveOrganization == true and .activation.checks.syntheticOrganizationRemoved == true and .activation.checks.clientConfigurationRecorded == true)' <<<"$status_json")"
+  backup_ok="$(jq -r '.activation.checks.encryptedBackupWithin24Hours == true' <<<"$status_json")"
+  restore_ok="$(jq -r '.activation.checks.restoreVerifiedWithin30Days == true' <<<"$status_json")"
+  acceptance_ok=false; synthetic_evidence_valid && acceptance_ok=true
+  client_apk_ok=false; client_apk_manifest_valid && client_apk_ok=true
+  security_ok=false; code_security_gate && security_ok=true
+  evidence_files_ok=false; client_evidence_files_ready && evidence_files_ok=true
+  source_ok=false; [[ -z "$(git status --porcelain --untracked-files=no)" ]] && source_ok=true
+  printf 'ChallanSe controlled client-pilot readiness\n\n'
+  readiness_line 'Encrypted storage and healthy local services' "$status_ok"
+  readiness_line 'Exactly two MFA-enabled reviewers' "$reviewers_ok"
+  readiness_line 'One non-synthetic client configuration' "$configuration_ok"
+  readiness_line 'Successful 50-receipt evidence for current commit' "$acceptance_ok"
+  readiness_line 'Controlled-client APK and manifest match' "$client_apk_ok"
+  readiness_line 'No open critical/high CodeQL findings' "$security_ok"
+  readiness_line 'Validated client, security, Android and operations evidence' "$evidence_files_ok"
+  readiness_line 'Encrypted backup completed within 24 hours' "$backup_ok"
+  readiness_line 'Restore verified within 30 days' "$restore_ok"
+  readiness_line 'Tracked source tree is clean' "$source_ok"
+  for value in "$status_ok" "$reviewers_ok" "$configuration_ok" "$acceptance_ok" "$client_apk_ok" "$security_ok" "$evidence_files_ok" "$backup_ok" "$restore_ok" "$source_ok"; do
+    [[ "$value" == "true" ]] || passed=false
+  done
+  mkdir -p "$CLIENT_READINESS_DIR"
+  evidence="$(latest_synthetic_evidence)"
+  jq -n \
+    --arg commitSha "$(git rev-parse HEAD)" \
+    --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg evidenceDirectory "$evidence" \
+    --argjson passed "$passed" \
+    --argjson status "$status_json" \
+    --argjson checks "$(jq -n \
+      --argjson services "$status_ok" --argjson reviewers "$reviewers_ok" --argjson configuration "$configuration_ok" \
+      --argjson acceptance "$acceptance_ok" --argjson clientApk "$client_apk_ok" --argjson security "$security_ok" \
+      --argjson evidence "$evidence_files_ok" --argjson backup "$backup_ok" --argjson restore "$restore_ok" --argjson source "$source_ok" \
+      '{services:$services,reviewers:$reviewers,clientConfiguration:$configuration,syntheticAcceptance:$acceptance,clientApk:$clientApk,codeSecurity:$security,humanEvidence:$evidence,backup:$backup,restore:$restore,cleanSource:$source}')" \
+    '{schemaVersion:"1.0",commitSha:$commitSha,generatedAt:$generatedAt,passed:$passed,evidenceDirectory:$evidenceDirectory,checks:$checks,runtimeStatus:$status}' \
+    >"$CLIENT_READINESS_DIR/readiness-manifest.json"
+  chmod 600 "$CLIENT_READINESS_DIR/readiness-manifest.json"
+  if [[ "$passed" == "true" ]]; then
+    printf '\nGREEN: controlled client-pilot readiness passed.\n'
+  else
+    printf '\nRED: real client data remains blocked.\n' >&2
+    return 1
+  fi
 }
 download_apk() {
   local apk="$ROOT/apps/mobile/android/app/build/outputs/apk/localPilot/app-localPilot.apk"
@@ -903,11 +1178,17 @@ Commands:
   seed               Seed synthetic site, vendors, reviewers, and Tally data
   test-data          Refresh five WebP fixtures and the compatible Tally CSV
   enroll             Create a ten-minute device enrollment link
+  enroll --client-pilot  Test the controlled build using synthetic data
   reviewer-enroll    Create or rotate one reviewer's password and MFA
+  prepare-client-signing  Create one dedicated client-pilot APK signing identity
+  build-client-apk   Build and verify the controlled-client APK and manifest
+  download-client-apk  Copy the controlled-client APK and print SHA-256
+  record-client-evidence TYPE FILE  Validate and store one encrypted readiness record
+  client-readiness   Print every fail-closed real-data activation gate
   backup PATH        Create an encrypted Restic backup on an external USB mount
   backup-verify PATH Verify repository data and restore the latest snapshot
   prepare-client     Replace synthetic records using an approved client JSON file
-  activate-client-pilot  Enable real data only after evidence and backup gates pass
+  activate-client-pilot  Enable real data only after every readiness gate passes
   end-client-pilot   End capture and start the configured deletion waiting period
   purge-ended-client-pilot  Delete ended client data only after retention expires
   status             Show one local readiness summary
@@ -935,12 +1216,17 @@ case "${1:-}" in
   start) start_stack "${2:---lan}" ;;
   seed) seed ;;
   test-data) test_data ;;
-  enroll) enroll ;;
+  enroll) enroll "${2:-}" ;;
   reviewer-enroll) reviewer_enroll ;;
+  prepare-client-signing) prepare_client_signing ;;
+  build-client-apk) build_client_apk ;;
+  download-client-apk) download_client_apk ;;
+  record-client-evidence) record_client_evidence "${2:-}" "${3:-}" ;;
+  client-readiness) client_readiness ;;
   backup) backup_pilot "${2:-}" ;;
   backup-verify) backup_verify "${2:-}" ;;
   prepare-client) prepare_client_pilot "${2:-}" ;;
-  activate-client-pilot) activate_client_pilot "${2:-}" "${3:-}" "${4:-}" ;;
+  activate-client-pilot) activate_client_pilot ;;
   end-client-pilot) end_client_pilot ;;
   purge-ended-client-pilot) purge_ended_client_pilot ;;
   status) status_cmd ;;

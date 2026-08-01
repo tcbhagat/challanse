@@ -83,6 +83,16 @@ The supervised browser must trust `~/.config/challanse-local/tls/pilot-ca.crt`.
 
 `activation.ready: false` and backup `MISSING` are expected in synthetic-demo mode. They prevent real-data activation and do not block synthetic testing.
 
+## Controlled-client readiness
+
+Real challans remain prohibited until this command prints only `PASS` lines and ends with the green readiness result:
+
+```bash
+./scripts/local-pilot.sh client-readiness
+```
+
+The command is deliberately fail-closed. It requires healthy encrypted services, exactly two MFA reviewers, a non-synthetic client configuration, current 50-receipt evidence, a matching controlled-client APK manifest, no open critical/high CodeQL alert, four validated human evidence files, a recent encrypted backup and restore, and a clean tracked source tree. A missing external review, USB backup, real-device field report, signed client acceptance, or supervised-power limitation must remain a failure rather than being bypassed.
+
 ## Complete browser test
 
 Sign in as the individual organization administrator with password and TOTP. Open `/operator`, then select **Run complete synthetic test**.

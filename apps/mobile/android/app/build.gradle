@@ -102,6 +102,14 @@ android {
                 keyPassword System.getenv("CHALLANSE_KEY_PASSWORD")
             }
         }
+        if (System.getenv("CHALLANSE_CLIENT_KEYSTORE_FILE")) {
+            clientPilot {
+                storeFile file(System.getenv("CHALLANSE_CLIENT_KEYSTORE_FILE"))
+                storePassword System.getenv("CHALLANSE_CLIENT_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("CHALLANSE_CLIENT_KEY_ALIAS")
+                keyPassword System.getenv("CHALLANSE_CLIENT_KEY_PASSWORD")
+            }
+        }
     }
     buildTypes {
         debug {
@@ -123,6 +131,17 @@ android {
             shrinkResources false
             matchingFallbacks = ["debug"]
             manifestPlaceholders = [usesCleartextTraffic: "false", enrollmentScheme: "challanse-local"]
+        }
+        clientPilot {
+            initWith debug
+            applicationIdSuffix ".clientpilot"
+            versionNameSuffix "-controlled"
+            signingConfig System.getenv("CHALLANSE_CLIENT_KEYSTORE_FILE") ? signingConfigs.clientPilot : null
+            debuggable false
+            minifyEnabled false
+            shrinkResources false
+            matchingFallbacks = ["debug"]
+            manifestPlaceholders = [usesCleartextTraffic: "false", enrollmentScheme: "challanse-client"]
         }
     }
 }

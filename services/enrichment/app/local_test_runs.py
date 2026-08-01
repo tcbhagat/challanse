@@ -31,6 +31,7 @@ ARTIFACT_NAMES = {
     "operator-mobile.png",
     "runtime-manifest.json",
 }
+ARTIFACT_FILE_NAMES = {name: name for name in ARTIFACT_NAMES}
 
 
 class LocalTestRunError(RuntimeError):
@@ -88,12 +89,11 @@ def prune_test_runs(settings: Settings, retention_days: int = 30) -> int:
             (cutoff,),
         ).fetchall()
         for row in rows:
-            directory = str(row["artifact_directory"] or "")
-            if directory:
-                resolved = Path(directory).resolve()
-                allowed_root = (Path(settings.local_data_root) / "exports" / "test-runs").resolve()
-                if resolved.is_relative_to(allowed_root):
-                    shutil.rmtree(resolved, ignore_errors=True)
+            directory = _artifact_directory(settings, UUID(str(row["id"])))
+            if directory.is_symlink():
+                directory.unlink(missing_ok=True)
+            elif directory.is_dir():
+                shutil.rmtree(directory)
         if rows:
             connection.execute("DELETE FROM local_test_runs WHERE id = ANY(%s)", ([row["id"] for row in rows],))
         connection.commit()
@@ -168,12 +168,7 @@ def list_artifacts(settings: Settings, run_id: UUID) -> list[dict[str, object]]:
     run = get_test_run(settings, run_id)
     if not run["artifactsAvailable"]:
         return []
-    with system_connection(settings.system_database_url, row_factory=dict_row) as connection:
-        row = connection.execute(
-            "SELECT artifact_directory FROM local_test_runs WHERE id = %s",
-            (run_id,),
-        ).fetchone()
-    directory = _validated_artifact_directory(settings, str(row["artifact_directory"]))
+    directory = _artifact_directory(settings, run_id, require_existing=True)
     return [
         {"name": path.name, "bytes": path.stat().st_size}
         for path in sorted(directory.iterdir())
@@ -182,7 +177,8 @@ def list_artifacts(settings: Settings, run_id: UUID) -> list[dict[str, object]]:
 
 
 def artifact_path(settings: Settings, run_id: UUID, name: str) -> Path:
-    if name not in ARTIFACT_NAMES:
+    file_name = ARTIFACT_FILE_NAMES.get(name)
+    if file_name is None:
         raise LocalTestRunError("local_test_artifact_not_allowed")
     with system_connection(settings.system_database_url, row_factory=dict_row) as connection:
         row = connection.execute(
@@ -191,18 +187,19 @@ def artifact_path(settings: Settings, run_id: UUID, name: str) -> Path:
         ).fetchone()
     if not row or not row["artifact_directory"]:
         raise LocalTestRunError("local_test_artifact_not_found")
-    path = _validated_artifact_directory(settings, str(row["artifact_directory"])) / name
-    if not path.is_file():
+    directory = _artifact_directory(settings, run_id, require_existing=True)
+    path = directory / file_name
+    if path.is_symlink() or not path.is_file():
         raise LocalTestRunError("local_test_artifact_not_found")
     return path
 
 
-def _validated_artifact_directory(settings: Settings, value: str) -> Path:
+def _artifact_directory(settings: Settings, run_id: UUID, *, require_existing: bool = False) -> Path:
     allowed_root = (Path(settings.local_data_root) / "exports" / "test-runs").resolve()
-    resolved = Path(value).resolve()
-    if not resolved.is_relative_to(allowed_root):
-        raise LocalTestRunError("local_test_artifact_path_invalid")
-    return resolved
+    directory = allowed_root / str(run_id)
+    if require_existing and (directory.is_symlink() or not directory.is_dir()):
+        raise LocalTestRunError("local_test_artifact_not_found")
+    return directory
 
 
 def claim_test_run(settings: Settings) -> UUID | None:
@@ -432,7 +429,9 @@ def _upload_acceptance_workload(
 
 
 def _write_evidence(settings: Settings, run_id: UUID, report: dict[str, object], fixtures_directory: Path) -> Path:
-    directory = Path(settings.local_data_root) / "exports" / "test-runs" / str(run_id)
+    directory = _artifact_directory(settings, run_id)
+    if directory.is_symlink():
+        raise LocalTestRunError("local_test_artifact_path_invalid")
     directory.mkdir(parents=True, exist_ok=True)
     runtime = local_status(settings)
     (directory / "acceptance-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

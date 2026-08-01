@@ -48,7 +48,7 @@ from app.ingress import MemoryIngressStore, PostgresIngressStore
 from app.jobs import apply_retention, generate_digests, generate_nightly_report, record_telemetry
 from app.local_auth import LocalAuthError, authenticate, enroll_reviewer, validate_session
 from app.local_seed import SYNTHETIC_ORGANIZATION_ID as LOCAL_SYNTHETIC_ORGANIZATION_ID, TALLY_CSV
-from app.pilot_control import PilotControlError, require_capture_enabled
+from app.pilot_control import PilotControlError, activate_controlled_pilot, require_capture_enabled
 from app.main import app, get_ingress_store_dependency
 from app.notifications import DigestReceipt, aggregate_digests
 from app.outbox import dispatch_outbox_once
@@ -450,6 +450,23 @@ def test_local_reviewer_auth_locks_after_five_failures() -> None:
             authenticate(settings, "locked@example.com", "wrong password", factor)
     with pytest.raises(LocalAuthError, match="account_locked"):
         authenticate(settings, "locked@example.com", "correct horse battery staple", factor)
+
+
+def test_controlled_pilot_activation_requires_every_evidence_hash() -> None:
+    valid_hash = "a" * 64
+    with pytest.raises(PilotControlError, match="activation_evidence_hash_invalid"):
+        activate_controlled_pilot(
+            Settings(ENVIRONMENT="local-pilot"),
+            operator_email="controller@example.com",
+            retention_days=30,
+            client_approval_sha256=valid_hash,
+            security_review_sha256=valid_hash,
+            backup_restore_sha256=valid_hash,
+            android_field_sha256="",
+            operations_acceptance_sha256=valid_hash,
+            readiness_manifest_sha256=valid_hash,
+            confirmation="ACTIVATE CONTROLLED CLIENT PILOT",
+        )
 
 
 @pytest.mark.integration

@@ -87,18 +87,28 @@ The first command writes an encrypted Restic snapshot. The second verifies repos
 Do not activate this mode without a qualified independent security review and signed client agreement. Prepare a private JSON file containing one organization, one site, exactly two named reviewers, approved Wi-Fi SSIDs, and approved vendors. Keep it outside Git.
 
 ```bash
+./scripts/local-pilot.sh prepare-client-signing
+./scripts/local-pilot.sh build-client-apk
+./scripts/local-pilot.sh download-client-apk
+./scripts/local-pilot.sh enroll --client-pilot
+
+./scripts/local-pilot.sh record-client-evidence client-acceptance /secure/client-acceptance.json
+./scripts/local-pilot.sh record-client-evidence security-acceptance /secure/security-acceptance.json
+./scripts/local-pilot.sh record-client-evidence android-field-acceptance /secure/android-field-acceptance.json
+./scripts/local-pilot.sh record-client-evidence operations-acceptance /secure/operations-acceptance.json
+
+./scripts/local-pilot.sh acceptance
+./scripts/local-pilot.sh evidence
 ./scripts/local-pilot.sh prepare-client /secure/client-pilot.json
 ./scripts/local-pilot.sh reviewer-enroll
 ./scripts/local-pilot.sh reviewer-enroll
 ./scripts/local-pilot.sh backup /media/USER/CLIENT-BACKUP
 ./scripts/local-pilot.sh backup-verify /media/USER/CLIENT-BACKUP
-./scripts/local-pilot.sh activate-client-pilot \
-  /secure/signed-client-approval.pdf \
-  /secure/independent-security-review.pdf \
-  /mnt/challanse-data/exports/backup-restore-SNAPSHOT.json
+./scripts/local-pilot.sh client-readiness
+./scripts/local-pilot.sh activate-client-pilot
 ```
 
-The command hashes the three evidence files and activates the database-controlled mode only when all gates pass. Editing an environment file cannot activate real-data mode. To end capture and later remove client data after the agreed retention period:
+The dedicated APK has application ID `com.constrovet.challanse.clientpilot`, displays `CONTROLLED CLIENT PILOT`, and is signed with a local test identity stored outside Git. The readiness manifest binds the active commit, APK, security review, Android field evidence, operations limitation, backup, restore and client acceptance. Editing an environment file cannot activate real-data mode. To end capture and later remove client data after the agreed retention period:
 
 ```bash
 ./scripts/local-pilot.sh end-client-pilot

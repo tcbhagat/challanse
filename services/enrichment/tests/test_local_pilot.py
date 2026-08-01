@@ -1,6 +1,7 @@
 from collections import namedtuple
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 from fastapi import HTTPException
@@ -14,8 +15,8 @@ from app.local_ocr import normalize_text, run_local_ocr, validate_normalized
 from app.local_storage import local_uploads_paused
 from app.object_store import object_encryption_headers
 from app.providers import run_ocr
-from app.local_auth import login_page, parse_login_form
-from app.local_test_runs import LocalTestRunError, _validated_artifact_directory
+from app.local_auth import login_page, parse_login_form, safe_local_next_path
+from app.local_test_runs import LocalTestRunError, _artifact_directory
 from app.main import _require_local_operator
 
 
@@ -173,6 +174,27 @@ def test_local_login_form_does_not_allow_open_redirect() -> None:
     assert "attacker.example" not in page
 
 
+@pytest.mark.parametrize(
+    "candidate",
+    (
+        "https://attacker.example",
+        "//attacker.example",
+        "/%2f%2fattacker.example",
+        "/operator?next=https://attacker.example",
+        "/operator#https://attacker.example",
+        "/operator\r\nLocation:https://attacker.example",
+        "/review",
+    ),
+)
+def test_local_redirects_reject_unapproved_destinations(candidate: str) -> None:
+    assert safe_local_next_path(candidate) == "/"
+
+
+@pytest.mark.parametrize("candidate", ("/", "/operator"))
+def test_local_redirects_preserve_approved_destinations(candidate: str) -> None:
+    assert safe_local_next_path(candidate) == candidate
+
+
 def test_local_login_form_parsing_is_bounded_and_explicit() -> None:
     assert parse_login_form(b"email=a%40example.com&password=long-password&second_factor=123456&next=%2Freview") == (
         "a@example.com", "long-password", "123456", "/review"
@@ -226,11 +248,22 @@ def test_local_test_artifacts_cannot_escape_encrypted_export_root(tmp_path) -> N
         SYNTHETIC_MODE=True,
         LOCAL_DATA_ROOT=str(tmp_path / "encrypted"),
     )
-    allowed = tmp_path / "encrypted" / "exports" / "test-runs" / "run-1"
+    run_id = UUID("00000000-0000-0000-0000-000000000001")
+    allowed = tmp_path / "encrypted" / "exports" / "test-runs" / str(run_id)
     allowed.mkdir(parents=True)
-    assert _validated_artifact_directory(settings, str(allowed)) == allowed.resolve()
-    with pytest.raises(LocalTestRunError, match="local_test_artifact_path_invalid"):
-        _validated_artifact_directory(settings, str(tmp_path / "outside"))
+    assert _artifact_directory(settings, run_id, require_existing=True) == allowed.resolve()
+
+
+def test_local_test_artifacts_reject_symlinked_run_directory(tmp_path) -> None:
+    run_id = UUID("00000000-0000-0000-0000-000000000001")
+    settings = Settings(ENVIRONMENT="local-pilot", SYNTHETIC_MODE=True, LOCAL_DATA_ROOT=str(tmp_path / "encrypted"))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    run_directory = tmp_path / "encrypted" / "exports" / "test-runs" / str(run_id)
+    run_directory.parent.mkdir(parents=True)
+    run_directory.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(LocalTestRunError, match="local_test_artifact_not_found"):
+        _artifact_directory(settings, run_id, require_existing=True)
 
 
 def test_raw_migrations_do_not_require_runtime_database_roles() -> None:

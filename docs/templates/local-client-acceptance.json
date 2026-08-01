@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "controlled_rollout_accepted": false,
+  "privacy_notice_accepted": false,
+  "retention_days": 30,
+  "supervised_hours_accepted": false,
+  "backup_limitations_accepted": false,
+  "support_limits_accepted": false,
+  "accepted_by": "",
+  "accepted_at": "",
+  "evidence_artifacts": [
+    {
+      "name": "",
+      "sha256": ""
+    }
+  ]
+}

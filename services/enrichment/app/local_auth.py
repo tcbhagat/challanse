@@ -216,8 +216,17 @@ def logout(settings: Settings, token: str) -> None:
         connection.commit()
 
 
+LOCAL_NEXT_PATHS = {"/", "/operator"}
+
+
+def safe_local_next_path(value: str) -> str:
+    if value in LOCAL_NEXT_PATHS and not any(ord(character) < 32 for character in value):
+        return value
+    return "/"
+
+
 def login_page(message: str = "", next_path: str = "/") -> str:
-    safe_next = next_path if next_path.startswith("/") and not next_path.startswith("//") else "/"
+    safe_next = safe_local_next_path(next_path)
     error = f'<p role="alert">{html.escape(message)}</p>' if message else ""
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ChallanSe sign in</title><style>body{{font-family:system-ui;background:#07111f;color:#fff;display:grid;place-items:center;min-height:100vh;margin:0}}main{{width:min(90%,24rem)}}label,input,button{{display:block;width:100%;box-sizing:border-box}}input,button{{min-height:48px;margin:.4rem 0 1rem;padding:.75rem;font-size:1rem}}button{{background:#f59e0b;border:0;font-weight:700}}p{{color:#fca5a5}}</style></head><body><main><h1>ChallanSe</h1>{error}<form method="post" action="/login"><input type="hidden" name="next" value="{html.escape(safe_next)}"><label>Email<input name="email" type="email" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><label>Authenticator or recovery code<input name="second_factor" inputmode="numeric" autocomplete="one-time-code" required></label><button type="submit">Sign in</button></form></main></body></html>"""
 

@@ -9,8 +9,15 @@ import {
   getEnrollmentCredential,
   parseEnrollmentLink,
   type PilotConfiguration,
+  IS_CLIENT_PILOT,
   IS_LOCAL_PILOT,
 } from './config/deviceEnrollment';
+
+const pilotBanner = (configuredMode?: PilotConfiguration['pilotMode']) => {
+  if (IS_CLIENT_PILOT) return 'CONTROLLED CLIENT PILOT';
+  if (configuredMode === 'controlled-client-pilot') return 'CONTROLLED CLIENT PILOT';
+  return configuredMode ? 'SYNTHETIC TEST' : 'LOCAL PILOT SETUP';
+};
 
 function EnrollmentScreen({ onConfigured }: { onConfigured: (configuration: PilotConfiguration) => void }) {
   const [busy, setBusy] = useState(false);
@@ -38,7 +45,7 @@ function EnrollmentScreen({ onConfigured }: { onConfigured: (configuration: Pilo
   }, [consumeLink]);
 
   return <View style={styles.enrollmentScreen}>
-    {IS_LOCAL_PILOT ? <Text accessibilityRole="header" style={styles.syntheticBanner}>LOCAL PILOT SETUP</Text> : null}
+    {IS_LOCAL_PILOT ? <Text accessibilityRole="header" style={styles.syntheticBanner}>{pilotBanner()}</Text> : null}
     <StatusBar backgroundColor="#000" barStyle="light-content" />
     <View style={styles.scanMark}><View /><View /><View /><View /></View>
     <Text style={styles.title}>Scan setup QR</Text>
@@ -67,7 +74,7 @@ export default function PilotApp() {
   if (!ready) return <View style={styles.loading}><ActivityIndicator size="large" color="#f59e0b" /></View>;
   return <SafeAreaProvider>
     {configuration ? <View style={styles.configured}>
-      {IS_LOCAL_PILOT ? <Text accessibilityRole="header" style={styles.syntheticBanner}>{configuration.pilotMode === 'controlled-client-pilot' ? 'CONTROLLED CLIENT PILOT' : 'SYNTHETIC TEST'}</Text> : null}
+      {IS_LOCAL_PILOT ? <Text accessibilityRole="header" style={styles.syntheticBanner}>{pilotBanner(configuration.pilotMode)}</Text> : null}
       <ReceiveMaterialApp configuration={configuration} />
     </View> : <EnrollmentScreen onConfigured={setConfiguration} />}
   </SafeAreaProvider>;

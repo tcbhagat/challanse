@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "ups_ready": false,
+  "supervised_power_limitation_accepted": false,
+  "incident_contact": "",
+  "support_hours": "",
+  "operator_name": "",
+  "completed_at": "",
+  "evidence_artifacts": [
+    {
+      "name": "",
+      "sha256": ""
+    }
+  ]
+}
