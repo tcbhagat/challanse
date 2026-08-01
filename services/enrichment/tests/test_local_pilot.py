@@ -266,6 +266,39 @@ def test_local_test_artifacts_reject_symlinked_run_directory(tmp_path) -> None:
         _artifact_directory(settings, run_id, require_existing=True)
 
 
+def test_local_test_artifacts_reject_symlinked_run_directory_even_without_existing_flag(tmp_path) -> None:
+    run_id = UUID("00000000-0000-0000-0000-000000000001")
+    settings = Settings(ENVIRONMENT="local-pilot", SYNTHETIC_MODE=True, LOCAL_DATA_ROOT=str(tmp_path / "encrypted"))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    run_directory = tmp_path / "encrypted" / "exports" / "test-runs" / str(run_id)
+    run_directory.parent.mkdir(parents=True)
+    run_directory.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(LocalTestRunError, match="local_test_artifact_not_found"):
+        _artifact_directory(settings, run_id)
+
+
+def test_local_test_artifacts_return_resolved_canonical_directory_without_existing(tmp_path) -> None:
+    run_id = UUID("00000000-0000-0000-0000-000000000001")
+    settings = Settings(ENVIRONMENT="local-pilot", SYNTHETIC_MODE=True, LOCAL_DATA_ROOT=str(tmp_path / "encrypted"))
+    allowed = tmp_path / "encrypted" / "exports" / "test-runs" / str(run_id)
+    assert _artifact_directory(settings, run_id) == allowed.resolve()
+
+
+def test_local_test_artifacts_reject_symlinked_run_directory_escaping_export_root(tmp_path) -> None:
+    run_id = UUID("00000000-0000-0000-0000-000000000001")
+    settings = Settings(ENVIRONMENT="local-pilot", SYNTHETIC_MODE=True, LOCAL_DATA_ROOT=str(tmp_path / "encrypted"))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    run_directory = tmp_path / "encrypted" / "exports" / "test-runs" / str(run_id)
+    run_directory.parent.mkdir(parents=True)
+    run_directory.symlink_to(outside, target_is_directory=True)
+    outside_run_directory = outside / str(run_id)
+    outside_run_directory.mkdir()
+    with pytest.raises(LocalTestRunError, match="local_test_artifact_not_found"):
+        _artifact_directory(settings, run_id, require_existing=True)
+
+
 def test_raw_migrations_do_not_require_runtime_database_roles() -> None:
     migration_root = Path(__file__).resolve().parents[1] / "migrations"
     combined = "\n".join(path.read_text(encoding="utf-8") for path in sorted(migration_root.glob("*.sql")))

@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import shutil
 import time
 from datetime import UTC, datetime, timedelta
@@ -32,6 +33,7 @@ ARTIFACT_NAMES = {
     "runtime-manifest.json",
 }
 ARTIFACT_FILE_NAMES = {name: name for name in ARTIFACT_NAMES}
+_CANONICAL_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 
 
 class LocalTestRunError(RuntimeError):
@@ -89,10 +91,11 @@ def prune_test_runs(settings: Settings, retention_days: int = 30) -> int:
             (cutoff,),
         ).fetchall()
         for row in rows:
-            directory = _artifact_directory(settings, UUID(str(row["id"])))
-            if directory.is_symlink():
-                directory.unlink(missing_ok=True)
-            elif directory.is_dir():
+            try:
+                directory = _artifact_directory(settings, UUID(str(row["id"])))
+            except LocalTestRunError:
+                continue
+            if directory.is_dir():
                 shutil.rmtree(directory)
         if rows:
             connection.execute("DELETE FROM local_test_runs WHERE id = ANY(%s)", ([row["id"] for row in rows],))
@@ -196,8 +199,16 @@ def artifact_path(settings: Settings, run_id: UUID, name: str) -> Path:
 
 def _artifact_directory(settings: Settings, run_id: UUID, *, require_existing: bool = False) -> Path:
     allowed_root = (Path(settings.local_data_root) / "exports" / "test-runs").resolve()
-    directory = allowed_root / str(run_id)
-    if require_existing and (directory.is_symlink() or not directory.is_dir()):
+    token = str(run_id)
+    if not _CANONICAL_UUID_RE.fullmatch(token):
+        raise LocalTestRunError("local_test_artifact_not_found")
+    candidate = allowed_root / token
+    if candidate.is_symlink():
+        raise LocalTestRunError("local_test_artifact_not_found")
+    directory = candidate.resolve()
+    if not directory.is_relative_to(allowed_root):
+        raise LocalTestRunError("local_test_artifact_not_found")
+    if require_existing and not directory.is_dir():
         raise LocalTestRunError("local_test_artifact_not_found")
     return directory
 
