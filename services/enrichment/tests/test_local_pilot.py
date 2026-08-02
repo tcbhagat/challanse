@@ -1,7 +1,8 @@
 from collections import namedtuple
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -16,7 +17,14 @@ from app.local_storage import local_uploads_paused
 from app.object_store import object_encryption_headers
 from app.providers import run_ocr
 from app.local_auth import login_page, parse_login_form, safe_local_next_path
-from app.local_test_runs import LocalTestRunError, _artifact_directory
+from app.local_test_runs import (
+    LocalTestRunError,
+    _artifact_directory,
+    _serialize,
+    artifact_path,
+    get_test_run,
+    list_artifacts,
+)
 from app.main import _require_local_operator
 
 
@@ -242,95 +250,270 @@ def test_local_operator_requires_synthetic_org_admin() -> None:
     assert production_error.value.status_code == 404
 
 
+class _FakeCursor:
+    def __init__(self, rows) -> None:
+        self._rows = rows
+
+    def fetchone(self):
+        return self._rows.pop(0) if self._rows else None
+
+
+class _FakeConnection:
+    def __init__(self, rows) -> None:
+        self.rows = rows
+
+    def execute(self, _sql, _params=None) -> _FakeCursor:
+        return _FakeCursor(self.rows)
+
+    def commit(self) -> None:
+        return None
+
+
+class _FakeSystemConnection:
+    def __init__(self, rows) -> None:
+        self.rows = list(rows)
+
+    def __enter__(self) -> _FakeConnection:
+        return _FakeConnection(self.rows)
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+
+def _fake_system_connection(rows):
+    connection = _FakeSystemConnection(rows)
+
+    def factory(_url, *_args, **_kwargs):
+        return connection
+
+    return factory
+
+
+def _local_pilot_settings(tmp_path) -> Settings:
+    return Settings(
+        ENVIRONMENT="local-pilot",
+        SYNTHETIC_MODE=True,
+        LOCAL_DATA_ROOT=str(tmp_path / "encrypted"),
+    )
+
+
+def _test_run_row(run_id: UUID, token: str) -> dict[str, object]:
+    return {
+        "id": run_id,
+        "status": "PASSED",
+        "stage": "PASSED",
+        "progress": 100,
+        "report_json": {},
+        "error_code": None,
+        "requested_at": datetime(2026, 1, 1, tzinfo=UTC),
+        "started_at": None,
+        "completed_at": datetime(2026, 1, 1, tzinfo=UTC),
+        "artifact_directory": token,
+    }
+
+
 def test_local_test_artifacts_cannot_escape_encrypted_export_root(tmp_path) -> None:
-    settings = Settings(
-        ENVIRONMENT="local-pilot",
-        SYNTHETIC_MODE=True,
-        LOCAL_DATA_ROOT=str(tmp_path / "encrypted"),
-    )
-    run_id = UUID("00000000-0000-0000-0000-000000000001")
-    allowed = tmp_path / "encrypted" / "exports" / "test-runs" / str(run_id)
+    settings = _local_pilot_settings(tmp_path)
+    token = str(uuid4())
+    allowed = tmp_path / "encrypted" / "exports" / "test-runs" / token
     allowed.mkdir(parents=True)
-    assert _artifact_directory(settings, run_id, require_existing=True) == allowed.resolve()
+    assert _artifact_directory(settings, token, require_existing=True) == allowed.resolve()
 
 
-def test_local_test_artifacts_reject_encoded_traversal(tmp_path) -> None:
-    settings = Settings(
-        ENVIRONMENT="local-pilot",
-        SYNTHETIC_MODE=True,
-        LOCAL_DATA_ROOT=str(tmp_path / "encrypted"),
-    )
-    run_id = UUID("00000000-0000-0000-0000-000000000001")
-    malicious_id = "%2e%2e%2fmalicious"
+@pytest.mark.parametrize(
+    "malicious_token",
+    (
+        "../../../etc/passwd",
+        "..",
+        ".",
+        "../test-runs/00000000-0000-0000-0000-000000000001",
+    ),
+)
+def test_local_test_artifacts_reject_traversal_tokens(tmp_path, malicious_token: str) -> None:
+    settings = _local_pilot_settings(tmp_path)
     with pytest.raises(LocalTestRunError, match="local_test_artifact_not_found"):
-        _artifact_directory(settings, malicious_id, require_existing=True)
+        _artifact_directory(settings, malicious_token, require_existing=True)
 
 
-def test_local_test_artifacts_reject_absolute_paths(tmp_path) -> None:
-    settings = Settings(
-        ENVIRONMENT="local-pilot",
-        SYNTHETIC_MODE=True,
-        LOCAL_DATA_ROOT=str(tmp_path / "encrypted"),
-    )
-    malicious_id = "/etc/passwd"
+@pytest.mark.parametrize(
+    "encoded_token",
+    (
+        "%2e%2e%2fmalicious",
+        "%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+        "%252e%252e%252fmalicious",
+        "..%2f..%2fetc%2fpasswd",
+    ),
+)
+def test_local_test_artifacts_reject_encoded_traversal(tmp_path, encoded_token: str) -> None:
+    settings = _local_pilot_settings(tmp_path)
     with pytest.raises(LocalTestRunError, match="local_test_artifact_not_found"):
-        _artifact_directory(settings, malicious_id, require_existing=True)
+        _artifact_directory(settings, encoded_token, require_existing=True)
 
 
-def test_local_test_artifacts_reject_hostile_filenames(tmp_path) -> None:
-    settings = Settings(
-        ENVIRONMENT="local-pilot",
-        SYNTHETIC_MODE=True,
-        LOCAL_DATA_ROOT=str(tmp_path / "encrypted"),
-    )
-    malicious_id = "../../../../etc/passwd"
+@pytest.mark.parametrize(
+    "absolute_token",
+    (
+        "/etc/passwd",
+        "/tmp",
+        "C:\\Windows\\System32",
+    ),
+)
+def test_local_test_artifacts_reject_absolute_paths(tmp_path, absolute_token: str) -> None:
+    settings = _local_pilot_settings(tmp_path)
     with pytest.raises(LocalTestRunError, match="local_test_artifact_not_found"):
-        _artifact_directory(settings, malicious_id, require_existing=True)
+        _artifact_directory(settings, absolute_token, require_existing=True)
 
 
-def test_local_test_artifacts_reject_symlinked_run_directory(tmp_path) -> None:
-    run_id = UUID("00000000-0000-0000-0000-000000000001")
-    settings = Settings(ENVIRONMENT="local-pilot", SYNTHETIC_MODE=True, LOCAL_DATA_ROOT=str(tmp_path / "encrypted"))
+@pytest.mark.parametrize(
+    "hostile_token",
+    (
+        "00000000-0000-0000-0000-000000000001-extra",
+        "00000000-0000-0000-0000-00000000000A",
+        "00000000-0000-0000-0000-00000000000",
+        "00000000-0000-0000-0000-000000000001 ",
+        " 00000000-0000-0000-0000-000000000001",
+        "00000000-0000-0000-0000-000000000001/../../etc/passwd",
+    ),
+)
+def test_local_test_artifacts_reject_hostile_or_non_canonical_tokens(tmp_path, hostile_token: str) -> None:
+    settings = _local_pilot_settings(tmp_path)
+    with pytest.raises(LocalTestRunError, match="local_test_artifact_not_found"):
+        _artifact_directory(settings, hostile_token, require_existing=True)
+
+
+def test_local_test_artifacts_reject_symlinked_token_directory(tmp_path) -> None:
+    token = str(uuid4())
+    settings = _local_pilot_settings(tmp_path)
     outside = tmp_path / "outside"
     outside.mkdir()
-    run_directory = tmp_path / "encrypted" / "exports" / "test-runs" / str(run_id)
+    run_directory = tmp_path / "encrypted" / "exports" / "test-runs" / token
     run_directory.parent.mkdir(parents=True)
     run_directory.symlink_to(outside, target_is_directory=True)
     with pytest.raises(LocalTestRunError, match="local_test_artifact_not_found"):
-        _artifact_directory(settings, run_id, require_existing=True)
+        _artifact_directory(settings, token, require_existing=True)
 
 
-def test_local_test_artifacts_reject_symlinked_run_directory_even_without_existing_flag(tmp_path) -> None:
-    run_id = UUID("00000000-0000-0000-0000-000000000001")
-    settings = Settings(ENVIRONMENT="local-pilot", SYNTHETIC_MODE=True, LOCAL_DATA_ROOT=str(tmp_path / "encrypted"))
+def test_local_test_artifacts_reject_symlinked_token_directory_even_without_existing_flag(tmp_path) -> None:
+    token = str(uuid4())
+    settings = _local_pilot_settings(tmp_path)
     outside = tmp_path / "outside"
     outside.mkdir()
-    run_directory = tmp_path / "encrypted" / "exports" / "test-runs" / str(run_id)
+    run_directory = tmp_path / "encrypted" / "exports" / "test-runs" / token
     run_directory.parent.mkdir(parents=True)
     run_directory.symlink_to(outside, target_is_directory=True)
     with pytest.raises(LocalTestRunError, match="local_test_artifact_not_found"):
-        _artifact_directory(settings, run_id)
+        _artifact_directory(settings, token)
 
 
 def test_local_test_artifacts_return_resolved_canonical_directory_without_existing(tmp_path) -> None:
-    run_id = UUID("00000000-0000-0000-0000-000000000001")
-    settings = Settings(ENVIRONMENT="local-pilot", SYNTHETIC_MODE=True, LOCAL_DATA_ROOT=str(tmp_path / "encrypted"))
-    allowed = tmp_path / "encrypted" / "exports" / "test-runs" / str(run_id)
-    assert _artifact_directory(settings, run_id) == allowed.resolve()
+    token = str(uuid4())
+    settings = _local_pilot_settings(tmp_path)
+    allowed = tmp_path / "encrypted" / "exports" / "test-runs" / token
+    assert _artifact_directory(settings, token) == allowed.resolve()
 
 
-def test_local_test_artifacts_reject_symlinked_run_directory_escaping_export_root(tmp_path) -> None:
-    run_id = UUID("00000000-0000-0000-0000-000000000001")
-    settings = Settings(ENVIRONMENT="local-pilot", SYNTHETIC_MODE=True, LOCAL_DATA_ROOT=str(tmp_path / "encrypted"))
+def test_local_test_artifacts_reject_symlinked_token_directory_escaping_export_root(tmp_path) -> None:
+    token = str(uuid4())
+    settings = _local_pilot_settings(tmp_path)
     outside = tmp_path / "outside"
     outside.mkdir()
-    run_directory = tmp_path / "encrypted" / "exports" / "test-runs" / str(run_id)
+    run_directory = tmp_path / "encrypted" / "exports" / "test-runs" / token
     run_directory.parent.mkdir(parents=True)
     run_directory.symlink_to(outside, target_is_directory=True)
-    outside_run_directory = outside / str(run_id)
+    outside_run_directory = outside / token
     outside_run_directory.mkdir()
     with pytest.raises(LocalTestRunError, match="local_test_artifact_not_found"):
-        _artifact_directory(settings, run_id, require_existing=True)
+        _artifact_directory(settings, token, require_existing=True)
+
+
+def test_serialized_test_run_does_not_expose_artifact_token() -> None:
+    token = str(uuid4())
+    payload = _serialize(_test_run_row(UUID("00000000-0000-0000-0000-000000000001"), token))
+    assert "artifactToken" not in payload
+    assert payload["artifactsAvailable"] is True
+
+
+def test_get_test_run_unknown_run_raises_not_found(monkeypatch, tmp_path) -> None:
+    settings = _local_pilot_settings(tmp_path)
+    monkeypatch.setattr("app.local_test_runs.system_connection", _fake_system_connection([]))
+    with pytest.raises(LocalTestRunError, match="local_test_run_not_found"):
+        get_test_run(settings, UUID("00000000-0000-0000-0000-000000000099"))
+
+
+def test_list_artifacts_unknown_run_raises_not_found(monkeypatch, tmp_path) -> None:
+    settings = _local_pilot_settings(tmp_path)
+    monkeypatch.setattr("app.local_test_runs.system_connection", _fake_system_connection([]))
+    with pytest.raises(LocalTestRunError, match="local_test_run_not_found"):
+        list_artifacts(settings, UUID("00000000-0000-0000-0000-000000000099"))
+
+
+def test_list_artifacts_returns_only_allowlisted_real_files(monkeypatch, tmp_path) -> None:
+    settings = _local_pilot_settings(tmp_path)
+    run_id = UUID("00000000-0000-0000-0000-000000000001")
+    token = str(uuid4())
+    directory = tmp_path / "encrypted" / "exports" / "test-runs" / token
+    directory.mkdir(parents=True)
+    (directory / "acceptance-report.json").write_text('{"ok": true}', encoding="utf-8")
+    (directory / "fixture-manifest.json").write_text("{}", encoding="utf-8")
+    (directory / "evil.txt").write_text("not allowlisted", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+    (directory / "runtime-status.json").symlink_to(outside)
+    monkeypatch.setattr(
+        "app.local_test_runs.system_connection",
+        _fake_system_connection([_test_run_row(run_id, token), (token,)]),
+    )
+    artifacts = list_artifacts(settings, run_id)
+    assert [item["name"] for item in artifacts] == ["acceptance-report.json", "fixture-manifest.json"]
+    assert artifacts[0]["bytes"] == len('{"ok": true}'.encode("utf-8"))
+
+
+def test_artifact_path_unknown_run_raises(monkeypatch, tmp_path) -> None:
+    settings = _local_pilot_settings(tmp_path)
+    run_id = UUID("00000000-0000-0000-0000-000000000099")
+    token = str(uuid4())
+    directory = tmp_path / "encrypted" / "exports" / "test-runs" / token
+    directory.mkdir(parents=True)
+    (directory / "acceptance-report.json").write_text('{"ok": true}', encoding="utf-8")
+    monkeypatch.setattr("app.local_test_runs.system_connection", _fake_system_connection([]))
+    with pytest.raises(LocalTestRunError, match="local_test_artifact_not_found"):
+        artifact_path(settings, run_id, "acceptance-report.json")
+
+
+def test_artifact_path_rejects_name_outside_allowlist(monkeypatch, tmp_path) -> None:
+    settings = _local_pilot_settings(tmp_path)
+    run_id = UUID("00000000-0000-0000-0000-000000000001")
+    monkeypatch.setattr("app.local_test_runs.system_connection", _fake_system_connection([]))
+    for name in ("../../etc/passwd", "acceptance-report.json/..", "/etc/passwd", "runtime-status.json/../../x"):
+        with pytest.raises(LocalTestRunError, match="local_test_artifact_not_allowed"):
+            artifact_path(settings, run_id, name)
+
+
+def test_artifact_path_rejects_symlinked_artifact_file(monkeypatch, tmp_path) -> None:
+    settings = _local_pilot_settings(tmp_path)
+    run_id = UUID("00000000-0000-0000-0000-000000000001")
+    token = str(uuid4())
+    directory = tmp_path / "encrypted" / "exports" / "test-runs" / token
+    directory.mkdir(parents=True)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+    (directory / "acceptance-report.json").symlink_to(outside)
+    monkeypatch.setattr("app.local_test_runs.system_connection", _fake_system_connection([(token,)]))
+    with pytest.raises(LocalTestRunError, match="local_test_artifact_not_found"):
+        artifact_path(settings, run_id, "acceptance-report.json")
+
+
+def test_artifact_path_serves_allowlisted_real_file(monkeypatch, tmp_path) -> None:
+    settings = _local_pilot_settings(tmp_path)
+    run_id = UUID("00000000-0000-0000-0000-000000000001")
+    token = str(uuid4())
+    directory = tmp_path / "encrypted" / "exports" / "test-runs" / token
+    directory.mkdir(parents=True)
+    (directory / "acceptance-report.json").write_text('{"ok": true}', encoding="utf-8")
+    monkeypatch.setattr("app.local_test_runs.system_connection", _fake_system_connection([(token,)]))
+    path = artifact_path(settings, run_id, "acceptance-report.json")
+    assert path == (directory / "acceptance-report.json").resolve()
+    assert path.read_text(encoding="utf-8") == '{"ok": true}'
 
 
 def test_raw_migrations_do_not_require_runtime_database_roles() -> None:

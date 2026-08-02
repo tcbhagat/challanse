@@ -92,7 +92,8 @@ def prune_test_runs(settings: Settings, retention_days: int = 30) -> int:
         ).fetchall()
         for row in rows:
             try:
-                directory = _artifact_directory(settings, UUID(str(row["id"])))
+                artifact_token = str(row["artifact_directory"])
+                directory = _artifact_directory(settings, artifact_token)
             except LocalTestRunError:
                 continue
             if directory.is_dir():
@@ -107,15 +108,16 @@ def create_test_run(settings: Settings, requested_by: UUID) -> dict[str, object]
     _require_local_synthetic(settings)
     prune_test_runs(settings)
     run_id = uuid4()
+    artifact_token = uuid4()
     try:
         with system_connection(settings.system_database_url, row_factory=dict_row) as connection:
             row = connection.execute(
                 """
-                INSERT INTO local_test_runs (id, requested_by)
-                VALUES (%s, %s)
+                INSERT INTO local_test_runs (id, requested_by, artifact_directory)
+                VALUES (%s, %s, %s)
                 RETURNING *
                 """,
-                (run_id, requested_by),
+                (run_id, requested_by, str(artifact_token)),
             ).fetchone()
             connection.commit()
     except Exception as error:
@@ -145,6 +147,17 @@ def get_test_run(settings: Settings, run_id: UUID) -> dict[str, object]:
     return _serialize(dict(row))
 
 
+def _artifact_token(settings: Settings, run_id: UUID) -> str:
+    with system_connection(settings.system_database_url) as connection:
+        row = connection.execute(
+            "SELECT artifact_directory FROM local_test_runs WHERE id = %s",
+            (run_id,),
+        ).fetchone()
+    if not row or not row[0]:
+        raise LocalTestRunError("local_test_artifact_not_found")
+    return str(row[0])
+
+
 def request_test_run_cancellation(settings: Settings, run_id: UUID, requested_by: UUID) -> dict[str, object]:
     _require_local_synthetic(settings)
     with system_connection(settings.system_database_url, row_factory=dict_row) as connection:
@@ -168,14 +181,13 @@ def request_test_run_cancellation(settings: Settings, run_id: UUID, requested_by
 
 
 def list_artifacts(settings: Settings, run_id: UUID) -> list[dict[str, object]]:
-    run = get_test_run(settings, run_id)
-    if not run["artifactsAvailable"]:
-        return []
-    directory = _artifact_directory(settings, run_id, require_existing=True)
+    get_test_run(settings, run_id)
+    artifact_token = _artifact_token(settings, run_id)
+    directory = _artifact_directory(settings, artifact_token, require_existing=True)
     return [
         {"name": path.name, "bytes": path.stat().st_size}
         for path in sorted(directory.iterdir())
-        if path.is_file() and path.name in ARTIFACT_NAMES
+        if path.name in ARTIFACT_NAMES and not path.is_symlink() and path.is_file()
     ]
 
 
@@ -183,26 +195,19 @@ def artifact_path(settings: Settings, run_id: UUID, name: str) -> Path:
     file_name = ARTIFACT_FILE_NAMES.get(name)
     if file_name is None:
         raise LocalTestRunError("local_test_artifact_not_allowed")
-    with system_connection(settings.system_database_url, row_factory=dict_row) as connection:
-        row = connection.execute(
-            "SELECT artifact_directory FROM local_test_runs WHERE id = %s",
-            (run_id,),
-        ).fetchone()
-    if not row or not row["artifact_directory"]:
-        raise LocalTestRunError("local_test_artifact_not_found")
-    directory = _artifact_directory(settings, run_id, require_existing=True)
+    artifact_token = _artifact_token(settings, run_id)
+    directory = _artifact_directory(settings, artifact_token, require_existing=True)
     path = directory / file_name
     if path.is_symlink() or not path.is_file():
         raise LocalTestRunError("local_test_artifact_not_found")
     return path
 
 
-def _artifact_directory(settings: Settings, run_id: UUID, *, require_existing: bool = False) -> Path:
+def _artifact_directory(settings: Settings, artifact_token_from_db: str, *, require_existing: bool = False) -> Path:
     allowed_root = (Path(settings.local_data_root) / "exports" / "test-runs").resolve()
-    token = str(run_id)
-    if not _CANONICAL_UUID_RE.fullmatch(token):
+    if not _CANONICAL_UUID_RE.fullmatch(artifact_token_from_db):
         raise LocalTestRunError("local_test_artifact_not_found")
-    candidate = allowed_root / token
+    candidate = allowed_root / artifact_token_from_db
     if candidate.is_symlink():
         raise LocalTestRunError("local_test_artifact_not_found")
     directory = candidate.resolve()
@@ -440,9 +445,8 @@ def _upload_acceptance_workload(
 
 
 def _write_evidence(settings: Settings, run_id: UUID, report: dict[str, object], fixtures_directory: Path) -> Path:
-    directory = _artifact_directory(settings, run_id)
-    if directory.is_symlink():
-        raise LocalTestRunError("local_test_artifact_path_invalid")
+    artifact_token = _artifact_token(settings, run_id)
+    directory = _artifact_directory(settings, artifact_token, require_existing=False)
     directory.mkdir(parents=True, exist_ok=True)
     runtime = local_status(settings)
     (directory / "acceptance-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
@@ -507,7 +511,7 @@ def run_claimed_test(settings: Settings, run_id: UUID) -> None:
         cleanup_acceptance(settings)
         verify_acceptance_cleanup(settings)
         _update(settings, run_id, stage="EVIDENCE", progress=96, report=report)
-        directory = _write_evidence(settings, run_id, report, fixtures_directory)
+        _write_evidence(settings, run_id, report, fixtures_directory)
         _update(
             settings,
             run_id,
@@ -515,7 +519,6 @@ def run_claimed_test(settings: Settings, run_id: UUID) -> None:
             progress=100,
             status="PASSED",
             report=report,
-            artifact_directory=str(directory),
         )
         if requested_by:
             _operator_audit(settings, requested_by, "TEST_RUN_PASSED", {"runId": str(run_id)})
