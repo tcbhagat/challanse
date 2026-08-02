@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@challanse/contracts": "1.0.0",
-    "jose": "6.1.0",
+    "jose": "6.2.5",
     "zod": "4.1.12"
   },
   "devDependencies": {
