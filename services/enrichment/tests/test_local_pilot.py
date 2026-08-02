@@ -254,6 +254,40 @@ def test_local_test_artifacts_cannot_escape_encrypted_export_root(tmp_path) -> N
     assert _artifact_directory(settings, run_id, require_existing=True) == allowed.resolve()
 
 
+def test_local_test_artifacts_reject_encoded_traversal(tmp_path) -> None:
+    settings = Settings(
+        ENVIRONMENT="local-pilot",
+        SYNTHETIC_MODE=True,
+        LOCAL_DATA_ROOT=str(tmp_path / "encrypted"),
+    )
+    run_id = UUID("00000000-0000-0000-0000-000000000001")
+    malicious_id = "%2e%2e%2fmalicious"
+    with pytest.raises(LocalTestRunError, match="local_test_artifact_not_found"):
+        _artifact_directory(settings, malicious_id, require_existing=True)
+
+
+def test_local_test_artifacts_reject_absolute_paths(tmp_path) -> None:
+    settings = Settings(
+        ENVIRONMENT="local-pilot",
+        SYNTHETIC_MODE=True,
+        LOCAL_DATA_ROOT=str(tmp_path / "encrypted"),
+    )
+    malicious_id = "/etc/passwd"
+    with pytest.raises(LocalTestRunError, match="local_test_artifact_not_found"):
+        _artifact_directory(settings, malicious_id, require_existing=True)
+
+
+def test_local_test_artifacts_reject_hostile_filenames(tmp_path) -> None:
+    settings = Settings(
+        ENVIRONMENT="local-pilot",
+        SYNTHETIC_MODE=True,
+        LOCAL_DATA_ROOT=str(tmp_path / "encrypted"),
+    )
+    malicious_id = "../../../../etc/passwd"
+    with pytest.raises(LocalTestRunError, match="local_test_artifact_not_found"):
+        _artifact_directory(settings, malicious_id, require_existing=True)
+
+
 def test_local_test_artifacts_reject_symlinked_run_directory(tmp_path) -> None:
     run_id = UUID("00000000-0000-0000-0000-000000000001")
     settings = Settings(ENVIRONMENT="local-pilot", SYNTHETIC_MODE=True, LOCAL_DATA_ROOT=str(tmp_path / "encrypted"))
