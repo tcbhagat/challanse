@@ -104,7 +104,9 @@ def _record_prune_failure(settings: Settings, run_id: UUID | None, error: BaseEx
         try:
             log_path.chmod(0o600)
         except OSError:
-            pass
+            logging.getLogger(__name__).warning(
+                "could not restrict permissions on prune audit log", exc_info=True
+            )
     except Exception:
         logging.getLogger(__name__).exception("failed to record test-run prune failure", exc_info=True)
 
