@@ -33,6 +33,47 @@ confirm_phrase() {
   read -r -p "$prompt Type $expected: " answer
   [[ "$answer" == "$expected" ]] || die "Cancelled. Nothing was changed."
 }
+prompt_secret() {
+  local prompt="$1" value
+  [[ -t 0 ]] || die "Cannot read a secret: standard input is not a terminal. Run this command interactively."
+  printf '%s' "$prompt" >&2
+  read -rsp '' value
+  printf '\n' >&2
+  [[ -n "$value" ]] || die "A non-empty secret is required."
+  printf '%s' "$value"
+}
+client_signing_cert_matches() {
+  local expected="$1" actual="$2"
+  expected="${expected,,}"
+  actual="${actual,,}"
+  [[ "$expected" =~ ^[0-9a-f]{64}$ && "$actual" == "$expected" ]]
+}
+verify_client_signing_files() {
+  [[ -f "$CLIENT_KEYSTORE" ]] || die "Client-pilot keystore is missing: run prepare-client-signing."
+  [[ "$(stat -c '%a' "$CLIENT_KEYSTORE")" == "600" ]] || die "Client-pilot keystore must use mode 600."
+  [[ "$(stat -c '%a' "$CLIENT_SIGNING_DIR")" == "700" ]] || die "Client-pilot signing directory must use mode 700."
+  case "$CLIENT_KEYSTORE" in
+    "$ROOT"/*) die "Client-pilot keystore must live outside the repository: $CLIENT_KEYSTORE" ;;
+  esac
+}
+client_keystore_cert_sha256() {
+  # Derives the signing certificate SHA-256 from the dedicated client keystore.
+  # Reuses CHALLANSE_CLIENT_KEYSTORE_PASSWORD if it is still in process memory;
+  # otherwise prompts hidden for it. The password is never written to any file.
+  need keytool
+  need openssl
+  local sha
+  if [[ -z "${CHALLANSE_CLIENT_KEYSTORE_PASSWORD:-}" ]]; then
+    CHALLANSE_CLIENT_KEYSTORE_PASSWORD="$(prompt_secret "Client-pilot keystore store password: ")"
+    export CHALLANSE_CLIENT_KEYSTORE_PASSWORD
+  fi
+  sha="$(keytool -exportcert -keystore "$CLIENT_KEYSTORE" -alias "$CHALLANSE_CLIENT_KEY_ALIAS" -rfc \
+    -storepass:env CHALLANSE_CLIENT_KEYSTORE_PASSWORD \
+    | openssl x509 -noout -fingerprint -sha256 2>&1 \
+    | sed -n 's/^.*Fingerprint=//p' | tr -d ':' | tr 'A-F' 'a-f')"
+  [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || die "Client-pilot keystore certificate fingerprint could not be read."
+  printf '%s' "$sha"
+}
 repo_var() { gh variable get "$1" --repo "$REPO" 2>/dev/null || true; }
 require_aws_freeze() {
   need gh
@@ -833,13 +874,18 @@ prepare_client_signing() {
       || die "Client-pilot signing state is incomplete. Do not regenerate or overwrite it."
     [[ "$(stat -c '%a' "$CLIENT_KEYSTORE")" == "600" && "$(stat -c '%a' "$CLIENT_SIGNING_ENV")" == "600" ]] \
       || die "Client-pilot signing files must use mode 600."
+    verify_client_signing_files
     set -a
     # shellcheck disable=SC1090
     source "$CLIENT_SIGNING_ENV"
     set +a
+    local store_password
+    store_password="$(prompt_secret "Client-pilot keystore store password: ")"
+    export CHALLANSE_CLIENT_KEYSTORE_PASSWORD="$store_password"
     keytool -list -keystore "$CLIENT_KEYSTORE" -storepass:env CHALLANSE_CLIENT_KEYSTORE_PASSWORD \
       -alias "$CHALLANSE_CLIENT_KEY_ALIAS" >/dev/null \
       || die "Existing client-pilot signing identity cannot be opened. Preserve it and investigate before rebuilding."
+    unset CHALLANSE_CLIENT_KEYSTORE_PASSWORD store_password
     printf 'Existing client-pilot signing identity preserved.\n'
     return
   fi
@@ -847,31 +893,30 @@ prepare_client_signing() {
   mkdir -p "$CLIENT_SIGNING_DIR"
   chmod 700 "$CLIENT_SIGNING_DIR"
   local store_password key_password alias_name="challanse-client-pilot"
-  store_password="$(openssl rand -hex 32)"
-  key_password="$store_password"
-  export CHALLANSE_CLIENT_STORE_PASSWORD="$store_password" CHALLANSE_CLIENT_KEY_PASSWORD_VALUE="$key_password"
+  store_password="$(prompt_secret "Client-pilot keystore store password: ")"
+  key_password="$(prompt_secret "Client-pilot key password: ")"
+  export CHALLANSE_CLIENT_KEYSTORE_PASSWORD="$store_password" CHALLANSE_CLIENT_KEY_PASSWORD="$key_password"
   keytool -genkeypair -noprompt \
     -keystore "$CLIENT_KEYSTORE" \
-    -storepass:env CHALLANSE_CLIENT_STORE_PASSWORD \
-    -keypass:env CHALLANSE_CLIENT_KEY_PASSWORD_VALUE \
+    -storepass:env CHALLANSE_CLIENT_KEYSTORE_PASSWORD \
+    -keypass:env CHALLANSE_CLIENT_KEY_PASSWORD \
     -alias "$alias_name" -keyalg RSA -keysize 3072 -validity 3650 \
     -dname "CN=ChallanSe Controlled Client Pilot,OU=Pilot,O=Constrovet,C=IN" >/dev/null
-  unset CHALLANSE_CLIENT_STORE_PASSWORD CHALLANSE_CLIENT_KEY_PASSWORD_VALUE
+  unset CHALLANSE_CLIENT_KEYSTORE_PASSWORD CHALLANSE_CLIENT_KEY_PASSWORD
   {
     printf 'CHALLANSE_CLIENT_KEYSTORE_FILE=%q\n' "$CLIENT_KEYSTORE"
-    printf 'CHALLANSE_CLIENT_KEYSTORE_PASSWORD=%q\n' "$store_password"
     printf 'CHALLANSE_CLIENT_KEY_ALIAS=%q\n' "$alias_name"
-    printf 'CHALLANSE_CLIENT_KEY_PASSWORD=%q\n' "$key_password"
   } >"$CLIENT_SIGNING_ENV"
   chmod 600 "$CLIENT_KEYSTORE" "$CLIENT_SIGNING_ENV"
+  chmod 700 "$CLIENT_SIGNING_DIR"
   unset store_password key_password
   printf 'Dedicated client-pilot signing identity created under %s. Back it up encrypted before client use.\n' "$CLIENT_SIGNING_DIR"
 }
 build_client_apk() {
   require_aws_freeze
   require_encrypted_storage
-  [[ -f "$CLIENT_SIGNING_ENV" && -f "$CLIENT_KEYSTORE" ]] \
-    || die "Run prepare-client-signing first."
+  [[ -f "$CLIENT_SIGNING_ENV" ]] || die "Run prepare-client-signing first."
+  verify_client_signing_files
   [[ -f "$TLS_DIR/pilot-ca.crt" ]] || die "Pilot CA is missing. Run provision first."
   [[ -z "$(git status --porcelain --untracked-files=no)" ]] \
     || die "Tracked source changes are uncommitted. Build the client APK only from a committed revision."
@@ -879,11 +924,17 @@ build_client_apk() {
   # shellcheck disable=SC1090
   source "$CLIENT_SIGNING_ENV"
   set +a
+  local store_password key_password
+  store_password="$(prompt_secret "Client-pilot keystore store password: ")"
+  key_password="$(prompt_secret "Client-pilot key password: ")"
+  export CHALLANSE_CLIENT_KEYSTORE_PASSWORD="$store_password" CHALLANSE_CLIENT_KEY_PASSWORD="$key_password"
   cp "$TLS_DIR/pilot-ca.crt" "$ROOT/apps/mobile/android/app/src/clientPilot/res/raw/challanse_pilot_ca.crt"
   (cd "$ROOT" && CI=true npm run build:client-pilot --workspace @challanse/mobile)
   download_client_apk
+  unset CHALLANSE_CLIENT_KEYSTORE_PASSWORD CHALLANSE_CLIENT_KEY_PASSWORD store_password key_password
 }
 download_client_apk() {
+  need openssl
   local apk="$ROOT/apps/mobile/android/app/build/outputs/apk/clientPilot/app-clientPilot.apk"
   local destination="$ROOT/artifacts/client-pilot/ChallanSe-Client-Pilot.apk"
   local manifest="$ROOT/artifacts/client-pilot/manifest.json"
@@ -891,12 +942,24 @@ download_client_apk() {
   local apksigner="$android_sdk/build-tools/36.0.0/apksigner"
   [[ -f "$apk" ]] || die "Client pilot APK is not built yet."
   [[ -x "$apksigner" ]] || die "Android apksigner 36.0.0 is unavailable."
+  verify_client_signing_files
+  set -a
+  # shellcheck disable=SC1090
+  source "$CLIENT_SIGNING_ENV"
+  set +a
+  local keystore_sha apk_sha certificate_sha api_origin
+  keystore_sha="$(client_keystore_cert_sha256)"
   mkdir -p "$ROOT/artifacts/client-pilot"
   cp "$apk" "$destination"
-  local apk_sha certificate_sha api_origin
   apk_sha="$(sha256sum "$destination" | awk '{print $1}')"
   certificate_sha="$($apksigner verify --print-certs "$destination" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1)"
   [[ "$certificate_sha" =~ ^[a-f0-9]{64}$ ]] || die "Client APK signing certificate fingerprint could not be verified."
+  if ! client_signing_cert_matches "$keystore_sha" "$certificate_sha"; then
+    rm -f "$destination"
+    unset CHALLANSE_CLIENT_KEYSTORE_PASSWORD
+    die "Client APK signer certificate does not match the configured keystore identity. No APK was copied."
+  fi
+  unset CHALLANSE_CLIENT_KEYSTORE_PASSWORD
   load_env
   api_origin="${PUBLIC_API_URL:-}"
   [[ "$api_origin" == https://* ]] || die "Client APK API origin must use HTTPS."
@@ -973,7 +1036,7 @@ client_evidence_files_ready() {
 }
 code_security_gate() {
   local alerts
-  alerts="$(gh api "repos/$REPO/code-scanning/alerts?state=open&per_page=100")" || return 1
+  alerts="$(gh api --paginate "repos/$REPO/code-scanning/alerts?state=open&per_page=100" | jq -s 'add // []')" || return 1
   jq -e '[.[] | select(.rule.security_severity_level == "critical" or .rule.security_severity_level == "high")] | length == 0' \
     <<<"$alerts" >/dev/null
 }
@@ -1203,40 +1266,42 @@ Commands:
 EOF
 }
 
-cd "$ROOT"
-case "${1:-}" in
-  preflight) preflight ;;
-  storage-audit) storage_audit ;;
-  storage-prepare) storage_prepare ;;
-  storage-open) storage_open ;;
-  storage-close) storage_close ;;
-  refresh-lan) refresh_lan_configuration ;;
-  firewall-prepare) firewall_prepare ;;
-  provision) provision ;;
-  start) start_stack "${2:---lan}" ;;
-  seed) seed ;;
-  test-data) test_data ;;
-  enroll) enroll "${2:-}" ;;
-  reviewer-enroll) reviewer_enroll ;;
-  prepare-client-signing) prepare_client_signing ;;
-  build-client-apk) build_client_apk ;;
-  download-client-apk) download_client_apk ;;
-  record-client-evidence) record_client_evidence "${2:-}" "${3:-}" ;;
-  client-readiness) client_readiness ;;
-  backup) backup_pilot "${2:-}" ;;
-  backup-verify) backup_verify "${2:-}" ;;
-  prepare-client) prepare_client_pilot "${2:-}" ;;
-  activate-client-pilot) activate_client_pilot ;;
-  end-client-pilot) end_client_pilot ;;
-  purge-ended-client-pilot) purge_ended_client_pilot ;;
-  status) status_cmd ;;
-  config-check) config_check ;;
-  download-apk) download_apk ;;
-  acceptance) acceptance ;;
-  evidence) evidence ;;
-  install-launcher) "$ROOT/scripts/install-local-launcher.sh" ;;
-  stop) stop_stack ;;
-  reset) reset_stack ;;
-  destroy) destroy_stack ;;
-  *) usage; exit 2 ;;
-esac
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  cd "$ROOT"
+  case "${1:-}" in
+    preflight) preflight ;;
+    storage-audit) storage_audit ;;
+    storage-prepare) storage_prepare ;;
+    storage-open) storage_open ;;
+    storage-close) storage_close ;;
+    refresh-lan) refresh_lan_configuration ;;
+    firewall-prepare) firewall_prepare ;;
+    provision) provision ;;
+    start) start_stack "${2:---lan}" ;;
+    seed) seed ;;
+    test-data) test_data ;;
+    enroll) enroll "${2:-}" ;;
+    reviewer-enroll) reviewer_enroll ;;
+    prepare-client-signing) prepare_client_signing ;;
+    build-client-apk) build_client_apk ;;
+    download-client-apk) download_client_apk ;;
+    record-client-evidence) record_client_evidence "${2:-}" "${3:-}" ;;
+    client-readiness) client_readiness ;;
+    backup) backup_pilot "${2:-}" ;;
+    backup-verify) backup_verify "${2:-}" ;;
+    prepare-client) prepare_client_pilot "${2:-}" ;;
+    activate-client-pilot) activate_client_pilot ;;
+    end-client-pilot) end_client_pilot ;;
+    purge-ended-client-pilot) purge_ended_client_pilot ;;
+    status) status_cmd ;;
+    config-check) config_check ;;
+    download-apk) download_apk ;;
+    acceptance) acceptance ;;
+    evidence) evidence ;;
+    install-launcher) "$ROOT/scripts/install-local-launcher.sh" ;;
+    stop) stop_stack ;;
+    reset) reset_stack ;;
+    destroy) destroy_stack ;;
+    *) usage; exit 2 ;;
+  esac
+fi

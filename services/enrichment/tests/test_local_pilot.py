@@ -1,3 +1,4 @@
+import shutil
 from collections import namedtuple
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,8 +23,10 @@ from app.local_test_runs import (
     _artifact_directory,
     _serialize,
     artifact_path,
+    create_test_run,
     get_test_run,
     list_artifacts,
+    prune_test_runs,
 )
 from app.main import _require_local_operator
 
@@ -257,6 +260,9 @@ class _FakeCursor:
     def fetchone(self):
         return self._rows.pop(0) if self._rows else None
 
+    def fetchall(self):
+        return list(self._rows)
+
 
 class _FakeConnection:
     def __init__(self, rows) -> None:
@@ -287,6 +293,59 @@ def _fake_system_connection(rows):
         return connection
 
     return factory
+
+
+class _RecordingFakeConnection:
+    """Statement-aware fake so prune/insert/audit queries get distinct results."""
+
+    def __init__(self, rows, inserted_row=None) -> None:
+        self.rows = list(rows)
+        self.inserted_row = inserted_row
+        self.statements: list[str] = []
+        self.delete_params: list[object] = []
+
+    def execute(self, sql, params=None) -> _FakeCursor:
+        self.statements.append(sql)
+        upper = sql.lstrip().upper()
+        if upper.startswith("DELETE"):
+            self.delete_params.append(params)
+            return _FakeCursor([])
+        if "INSERT INTO local_test_runs" in sql:
+            return _FakeCursor([self.inserted_row] if self.inserted_row is not None else [])
+        if "local_operator_events" in sql and "event_hash" in sql:
+            # Simulate an empty operator-audit log so hashing starts fresh.
+            return _FakeCursor([{"event_hash": None}])
+        return _FakeCursor(self.rows)
+
+    def commit(self) -> None:
+        return None
+
+
+class _RecordingFakeSystemConnection:
+    def __init__(self, rows, inserted_row=None) -> None:
+        self.connection = _RecordingFakeConnection(rows, inserted_row)
+
+    def __enter__(self) -> _RecordingFakeConnection:
+        return self.connection
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+
+def _recording_system_connection(rows, inserted_row=None):
+    connection = _RecordingFakeSystemConnection(rows, inserted_row)
+
+    def factory(_url, *_args, **_kwargs):
+        return connection
+
+    factory.connection = connection.connection
+    return factory
+
+
+def _deleted_run_ids(fake_connection) -> list[object]:
+    if not fake_connection.delete_params:
+        return []
+    return list(fake_connection.delete_params[0][0])
 
 
 def _local_pilot_settings(tmp_path) -> Settings:
@@ -521,3 +580,143 @@ def test_raw_migrations_do_not_require_runtime_database_roles() -> None:
     combined = "\n".join(path.read_text(encoding="utf-8") for path in sorted(migration_root.glob("*.sql")))
     assert "challanse_app" not in combined
     assert "challanse_system" not in combined
+
+
+def _prune_log_path(settings: Settings) -> Path:
+    return Path(settings.local_data_root) / "logs" / "local-operator-audit.jsonl"
+
+
+def _run_directory(tmp_path: Path, token: str) -> Path:
+    directory = tmp_path / "encrypted" / "exports" / "test-runs" / token
+    directory.mkdir(parents=True)
+    return directory
+
+
+def test_prune_test_runs_records_failures_and_continues(monkeypatch, tmp_path) -> None:
+    settings = _local_pilot_settings(tmp_path)
+    run_a = UUID("00000000-0000-0000-0000-00000000000a")
+    run_b = UUID("00000000-0000-0000-0000-00000000000b")
+    token_a = str(uuid4())
+    token_b = str(uuid4())
+    directory_a = _run_directory(tmp_path, token_a)
+    directory_b = _run_directory(tmp_path, token_b)
+    real_rmtree = shutil.rmtree
+
+    def flaky_rmtree(directory):
+        if directory == directory_a:
+            raise PermissionError("simulated cleanup failure")
+        real_rmtree(directory)
+
+    monkeypatch.setattr("app.local_test_runs.shutil.rmtree", flaky_rmtree)
+    fake = _recording_system_connection([_test_run_row(run_a, token_a), _test_run_row(run_b, token_b)])
+    monkeypatch.setattr("app.local_test_runs.system_connection", fake)
+    assert prune_test_runs(settings) == 1
+    assert directory_a.is_dir()  # orphaned directory preserved with its DB row
+    assert not directory_b.is_dir()
+    assert _deleted_run_ids(fake.connection) == [run_b]
+    log_text = _prune_log_path(settings).read_text(encoding="utf-8")
+    assert "TEST_RUN_PRUNE_FAILED" in log_text
+    assert str(run_a) in log_text
+    assert "PermissionError" in log_text
+
+
+def test_prune_test_runs_selects_only_terminal_runs_older_than_cutoff(monkeypatch, tmp_path) -> None:
+    settings = _local_pilot_settings(tmp_path)
+    fake = _recording_system_connection([])
+    monkeypatch.setattr("app.local_test_runs.system_connection", fake)
+    assert prune_test_runs(settings) == 0
+    select_sql = next(
+        statement
+        for statement in fake.connection.statements
+        if statement.lstrip().upper().startswith("SELECT") and "local_test_runs" in statement
+    )
+    assert "status IN ('CANCELLED', 'PASSED', 'FAILED')" in select_sql
+    assert "completed_at < %s" in select_sql
+    for status in ("QUEUED", "RUNNING", "CANCEL_REQUESTED"):
+        assert status not in select_sql
+    assert "local_pilot_control" not in select_sql
+
+
+def test_prune_test_runs_keeps_row_when_directory_cannot_be_removed(monkeypatch, tmp_path) -> None:
+    settings = _local_pilot_settings(tmp_path)
+    run_id = UUID("00000000-0000-0000-0000-00000000000c")
+    token = str(uuid4())
+    directory = _run_directory(tmp_path, token)
+
+    def failing_rmtree(_directory):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr("app.local_test_runs.shutil.rmtree", failing_rmtree)
+    fake = _recording_system_connection([_test_run_row(run_id, token)])
+    monkeypatch.setattr("app.local_test_runs.system_connection", fake)
+    assert prune_test_runs(settings) == 0
+    assert _deleted_run_ids(fake.connection) == []
+    assert directory.is_dir()
+    assert "TEST_RUN_PRUNE_FAILED" in _prune_log_path(settings).read_text(encoding="utf-8")
+
+
+def test_prune_test_runs_never_raises_when_rmtree_fails(monkeypatch, tmp_path) -> None:
+    settings = _local_pilot_settings(tmp_path)
+    run_id = UUID("00000000-0000-0000-0000-00000000000d")
+    token = str(uuid4())
+    directory = _run_directory(tmp_path, token)
+    monkeypatch.setattr(
+        "app.local_test_runs.shutil.rmtree",
+        lambda _directory: (_ for _ in ()).throw(OSError("simulated disk error")),
+    )
+    fake = _recording_system_connection([_test_run_row(run_id, token)])
+    monkeypatch.setattr("app.local_test_runs.system_connection", fake)
+    assert prune_test_runs(settings) == 0
+    assert directory.is_dir()
+    assert "TEST_RUN_PRUNE_FAILED" in _prune_log_path(settings).read_text(encoding="utf-8")
+
+
+def test_prune_test_runs_records_bad_token_failure_and_keeps_row(monkeypatch, tmp_path) -> None:
+    settings = _local_pilot_settings(tmp_path)
+    run_id = UUID("00000000-0000-0000-0000-00000000000e")
+    fake = _recording_system_connection([_test_run_row(run_id, "../../etc/passwd")])
+    monkeypatch.setattr("app.local_test_runs.system_connection", fake)
+    assert prune_test_runs(settings) == 0
+    assert _deleted_run_ids(fake.connection) == []
+    assert "TEST_RUN_PRUNE_FAILED" in _prune_log_path(settings).read_text(encoding="utf-8")
+
+
+def test_prune_test_runs_never_raises_on_database_failure(monkeypatch, tmp_path) -> None:
+    settings = _local_pilot_settings(tmp_path)
+
+    def failing_connection(_url, *_args, **_kwargs):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr("app.local_test_runs.system_connection", failing_connection)
+    assert prune_test_runs(settings) == 0
+    assert "TEST_RUN_PRUNE_FAILED" in _prune_log_path(settings).read_text(encoding="utf-8")
+
+
+def test_prune_test_runs_deletes_rows_with_no_directory_to_remove(monkeypatch, tmp_path) -> None:
+    settings = _local_pilot_settings(tmp_path)
+    run_id = UUID("00000000-0000-0000-0000-00000000000f")
+    token = str(uuid4())
+    fake = _recording_system_connection([_test_run_row(run_id, token)])
+    monkeypatch.setattr("app.local_test_runs.system_connection", fake)
+    assert prune_test_runs(settings) == 1
+    assert _deleted_run_ids(fake.connection) == [run_id]
+
+
+def test_create_test_run_proceeds_after_prune_failure(monkeypatch, tmp_path) -> None:
+    settings = _local_pilot_settings(tmp_path)
+    old_run = UUID("00000000-0000-0000-0000-0000000000a0")
+    new_run = UUID("00000000-0000-0000-0000-0000000000a1")
+    old_token = str(uuid4())
+    new_token = str(uuid4())
+    _run_directory(tmp_path, old_token)
+    monkeypatch.setattr(
+        "app.local_test_runs.shutil.rmtree",
+        lambda _directory: (_ for _ in ()).throw(PermissionError("locked")),
+    )
+    fake = _recording_system_connection([_test_run_row(old_run, old_token)], inserted_row=_test_run_row(new_run, new_token))
+    monkeypatch.setattr("app.local_test_runs.system_connection", fake)
+    requested_by = UUID("00000000-0000-0000-0000-0000000000aa")
+    result = create_test_run(settings, requested_by)
+    assert result["id"] == str(new_run)
+    assert "INSERT INTO local_test_runs" in "\n".join(fake.connection.statements)
+    assert "TEST_RUN_PRUNE_FAILED" in _prune_log_path(settings).read_text(encoding="utf-8")

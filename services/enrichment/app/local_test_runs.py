@@ -79,29 +79,67 @@ def _serialize(row: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _record_prune_failure(settings: Settings, run_id: UUID | None, error: BaseException) -> None:
+    """Record a test-run prune failure without ever raising.
+
+    Appends one structured JSON line to ``local-operator-audit.jsonl`` under
+    ``settings.local_data_root`` so an operator can investigate an orphaned
+    artifact directory later. Pruning is best-effort and must never block the
+    creation of a new test run, so recording failures is itself failure-safe.
+    """
+    try:
+        log_directory = Path(settings.local_data_root) / "logs"
+        log_directory.mkdir(parents=True, exist_ok=True)
+        record = {
+            "eventType": "TEST_RUN_PRUNE_FAILED",
+            "runId": str(run_id) if run_id is not None else None,
+            "errorClass": type(error).__name__,
+            "message": str(error),
+            "occurredAt": datetime.now(UTC).isoformat(),
+        }
+        log_path = log_directory / "local-operator-audit.jsonl"
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record) + "\n")
+        try:
+            log_path.chmod(0o600)
+        except OSError:
+            pass
+    except Exception:
+        pass
+
+
 def prune_test_runs(settings: Settings, retention_days: int = 30) -> int:
     _require_local_synthetic(settings)
     cutoff = datetime.now(UTC) - timedelta(days=retention_days)
-    with system_connection(settings.system_database_url, row_factory=dict_row) as connection:
-        rows = connection.execute(
-            """
-            SELECT id, artifact_directory FROM local_test_runs
-            WHERE status IN ('CANCELLED', 'PASSED', 'FAILED') AND completed_at < %s
-            """,
-            (cutoff,),
-        ).fetchall()
-        for row in rows:
-            try:
-                artifact_token = str(row["artifact_directory"])
-                directory = _artifact_directory(settings, artifact_token)
-            except LocalTestRunError:
-                continue
-            if directory.is_dir():
-                shutil.rmtree(directory)
-        if rows:
-            connection.execute("DELETE FROM local_test_runs WHERE id = ANY(%s)", ([row["id"] for row in rows],))
-        connection.commit()
-    return len(rows)
+    deleted_ids: list[object] = []
+    try:
+        with system_connection(settings.system_database_url, row_factory=dict_row) as connection:
+            rows = connection.execute(
+                """
+                SELECT id, artifact_directory FROM local_test_runs
+                WHERE status IN ('CANCELLED', 'PASSED', 'FAILED') AND completed_at < %s
+                """,
+                (cutoff,),
+            ).fetchall()
+            for row in rows:
+                run_id = row["id"]
+                try:
+                    artifact_token = str(row["artifact_directory"])
+                    directory = _artifact_directory(settings, artifact_token)
+                    if directory.is_dir():
+                        shutil.rmtree(directory)
+                except Exception as error:
+                    _record_prune_failure(settings, run_id, error)
+                    continue
+                deleted_ids.append(run_id)
+            if deleted_ids:
+                connection.execute("DELETE FROM local_test_runs WHERE id = ANY(%s)", (deleted_ids,))
+            connection.commit()
+    except Exception as error:
+        # A database-level failure must not block the new test run either.
+        _record_prune_failure(settings, None, error)
+        return 0
+    return len(deleted_ids)
 
 
 def create_test_run(settings: Settings, requested_by: UUID) -> dict[str, object]:

@@ -141,4 +141,95 @@ cat > "$client_report" <<JSON
 JSON
 assert_acceptance_gate accept_client CLIENT_ACCEPTANCE_SHA256 "ACCEPT CLIENT" "$client_report"
 
+# --- Client-pilot signing, keystore, cert-match, and paginated alert gate ---
+# Sourcing local-pilot.sh must not trigger its guarded command dispatch.
+source "$ROOT/scripts/local-pilot.sh"
+
+# A: signing passwords are prompt-only, hidden, non-empty, and never persisted.
+prompt_secret_body="$(declare -f prompt_secret)"
+prepare_body="$(declare -f prepare_client_signing)"
+build_body="$(declare -f build_client_apk)"
+script_text="$(cat "$ROOT/scripts/local-pilot.sh")"
+grep -Fq 'read -rsp' <<<"$prompt_secret_body" || fail "prompt_secret does not read hidden input"
+grep -Fq '[[ -t 0 ]]' <<<"$prompt_secret_body" || fail "prompt_secret does not guard against non-interactive stdin"
+grep -Fq 'prompt_secret' <<<"$prepare_body" || fail "prepare_client_signing never prompts for the keystore secrets"
+grep -Fq 'prompt_secret' <<<"$build_body" || fail "build_client_apk never prompts for the keystore secrets"
+grep -Fq 'unset CHALLANSE_CLIENT_KEYSTORE_PASSWORD' <<<"$prepare_body" || fail "prepare_client_signing never unsets the store password"
+grep -Fq 'unset CHALLANSE_CLIENT_KEYSTORE_PASSWORD' <<<"$build_body" || fail "build_client_apk never unsets the store password"
+if grep -Fq "printf 'CHALLANSE_CLIENT_KEYSTORE_PASSWORD=" <<<"$script_text"; then
+  fail "prepare_client_signing writes the store password to signing.env"
+fi
+if grep -Fq "printf 'CHALLANSE_CLIENT_KEY_PASSWORD=" <<<"$script_text"; then
+  fail "prepare_client_signing writes the key password to signing.env"
+fi
+if grep -Eq 'CHALLANSE_CLIENT_KEYSTORE_PASSWORD=%q|CHALLANSE_CLIENT_KEY_PASSWORD=%q' <<<"$script_text"; then
+  fail "a signing password is rendered into an env file"
+fi
+printf 'CHALLANSE_CLIENT_KEYSTORE_FILE=/tmp/challanse-client-pilot.jks\nCHALLANSE_CLIENT_KEY_ALIAS=challanse-client-pilot\n' \
+  > "$TEST_CONFIG/signing.env"
+if grep -Eq 'CHALLANSE_CLIENT_KEYSTORE_PASSWORD=|CHALLANSE_CLIENT_KEY_PASSWORD=' "$TEST_CONFIG/signing.env"; then
+  fail "signing.env contains a signing password"
+fi
+
+# B: keystore stays outside the repo with mode 600; signing dir uses mode 700.
+verify_body="$(declare -f verify_client_signing_files)"
+grep -Fq '600' <<<"$verify_body" || fail "keystore mode 600 is not enforced"
+grep -Fq '700' <<<"$verify_body" || fail "signing directory mode 700 is not enforced"
+signing_dir="$TEST_CONFIG/client-signing"
+CLIENT_SIGNING_DIR="$signing_dir"
+CLIENT_KEYSTORE="$signing_dir/challanse-client-pilot.jks"
+mkdir -p "$signing_dir"
+chmod 700 "$signing_dir"
+touch "$CLIENT_KEYSTORE"
+chmod 600 "$CLIENT_KEYSTORE"
+verify_client_signing_files
+chmod 644 "$CLIENT_KEYSTORE"
+if (verify_client_signing_files) >/dev/null 2>&1; then
+  fail "an open client keystore was accepted"
+fi
+chmod 600 "$CLIENT_KEYSTORE"
+chmod 755 "$signing_dir"
+if (verify_client_signing_files) >/dev/null 2>&1; then
+  fail "an open client signing directory was accepted"
+fi
+chmod 700 "$signing_dir"
+if (
+  ROOT="$TEST_CONFIG/fake-repo"
+  CLIENT_KEYSTORE="$ROOT/in-repo.jks"
+  CLIENT_SIGNING_DIR="$TEST_CONFIG/client-signing"
+  mkdir -p "$ROOT" "$CLIENT_SIGNING_DIR"
+  chmod 700 "$CLIENT_SIGNING_DIR"
+  touch "$ROOT/in-repo.jks"
+  chmod 600 "$ROOT/in-repo.jks"
+  verify_client_signing_files
+) >/dev/null 2>&1; then
+  fail "a client keystore inside the repository was accepted"
+fi
+
+# C: APK signer certificate must match the keystore certificate.
+if client_signing_cert_matches \
+  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"; then
+  fail "mismatching signing certificates were accepted"
+fi
+client_signing_cert_matches \
+  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+  || fail "matching signing certificates were rejected"
+client_signing_cert_matches \
+  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" \
+  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+  || fail "signing certificate comparison is not case-insensitive"
+if client_signing_cert_matches "" ""; then
+  fail "empty fingerprints were accepted"
+fi
+
+# D: code_security_gate fetches every open code-scanning alert page.
+gate_body="$(declare -f code_security_gate)"
+grep -Fq -- '--paginate' <<<"$gate_body" || fail "code_security_gate does not paginate code-scanning alerts"
+gh() { printf 'gh unavailable\n' >&2; return 1; }
+if code_security_gate >/dev/null 2>&1; then
+  fail "code_security_gate succeeded despite a gh failure"
+fi
+
 printf 'Production hardening checks passed.\n'
