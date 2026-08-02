@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import re
 import shutil
 import time
@@ -105,7 +106,7 @@ def _record_prune_failure(settings: Settings, run_id: UUID | None, error: BaseEx
         except OSError:
             pass
     except Exception:
-        pass
+        logging.getLogger(__name__).exception("failed to record test-run prune failure", exc_info=True)
 
 
 def prune_test_runs(settings: Settings, retention_days: int = 30) -> int:
