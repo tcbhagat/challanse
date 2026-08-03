@@ -11,6 +11,12 @@
 //                 non-empty, clearly synthetic (prefixed with "ci"), and
 //                 derived from a fixed salt — no randomness, no timestamps,
 //                 so repeated runs are byte-identical.
+//   --local       Render the local-pilot config to
+//                 apps/edge/config/edge.local.toml. D1/KV resource IDs are
+//                 deterministic, clearly synthetic (prefixed with "local"),
+//                 and stable, so the LAN-only pilot never requires real
+//                 Cloudflare resource IDs. The generated file is gitignored
+//                 and is consumed by the local compose edge service.
 //   --production  Render the real production config to
 //                 apps/edge/config/edge.production.toml. Requires EVERY real
 //                 resource ID and required var to be present in the
@@ -35,14 +41,17 @@ const TEMPLATE_PATH = join(ROOT, 'apps/edge', 'wrangler.toml');
 const OUTPUT_DIR = join(ROOT, 'apps/edge', 'config');
 const CI_OUTPUT = join(OUTPUT_DIR, 'edge.ci.toml');
 const PRODUCTION_OUTPUT = join(OUTPUT_DIR, 'edge.production.toml');
+const LOCAL_OUTPUT = join(OUTPUT_DIR, 'edge.local.toml');
 
-// Fixed salt — never derived from wall-clock time or randomness, so the CI
-// output is byte-identical across runs and machines.
+// Fixed salts — never derived from wall-clock time or randomness, so the CI
+// and local outputs are byte-identical across runs and machines.
 const CI_SALT = 'challanse-edge-ci-synthetic-2026';
+const LOCAL_SALT = 'challanse-edge-local-pilot-2026';
 
 const MODE_CI = '--ci';
 const MODE_PRODUCTION = '--production';
-const KNOWN_MODES = new Set([MODE_CI, MODE_PRODUCTION]);
+const MODE_LOCAL = '--local';
+const KNOWN_MODES = new Set([MODE_CI, MODE_PRODUCTION, MODE_LOCAL]);
 
 // Env var -> $$ marker used in wrangler.toml for resource IDs.
 const MARKER_MAP = {
@@ -103,6 +112,20 @@ const CI_VAR_DEFAULTS = {
   PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER: '0',
 };
 
+// Local-pilot defaults used by --local. The local compose frontend network
+// reaches the FastAPI enrichment service as "api" on port 8080; the mounted
+// .dev.vars still override these at runtime via `wrangler dev`.
+const LOCAL_VAR_DEFAULTS = {
+  ENVIRONMENT: 'local',
+  ACCESS_TEAM_DOMAIN: 'local-access-team.example.com',
+  ACCESS_AUD: 'local-access-audience',
+  ENRICHMENT_URL: 'http://api:8080',
+  EDGE_TO_ENRICHMENT_HMAC_KEY_ID: 'local-edge-to-enrichment-hmac-key-id',
+  EDGE_TO_ENRICHMENT_NEXT_HMAC_KEY_ID: 'local-edge-to-enrichment-next-hmac-key-id',
+  TURNSTILE_SITE_KEY: '0',
+  PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER: '0',
+};
+
 function printUsage(stream) {
   stream.write('Usage: node scripts/render-edge-config.mjs <mode>\n');
   stream.write('\n');
@@ -110,6 +133,9 @@ function printUsage(stream) {
   stream.write(`  ${MODE_CI}          Render a deterministic, synthetic (non-production) config to\n`);
   stream.write(`                ${relative(ROOT, CI_OUTPUT)}. All D1/KV resource IDs are\n`);
   stream.write('                non-empty, clearly synthetic ("ci" prefix), and stable across runs.\n');
+  stream.write(`  ${MODE_LOCAL}       Render the local-pilot config to\n`);
+  stream.write(`                ${relative(ROOT, LOCAL_OUTPUT)}. D1/KV resource IDs are\n`);
+  stream.write('                non-empty, clearly synthetic ("local" prefix), and stable across runs.\n');
   stream.write(`  ${MODE_PRODUCTION}  Render the real production config to\n`);
   stream.write(`                ${relative(ROOT, PRODUCTION_OUTPUT)}. Requires every resource ID and\n`);
   stream.write('                required var to be present in the environment; refuses to write\n');
@@ -127,6 +153,14 @@ function failUsage() {
 function syntheticId(label) {
   const digest = createHash('sha256').update(`${CI_SALT}:${label}`).digest('hex');
   return `ci${digest.slice(0, 30)}`;
+}
+
+// Deterministic local-pilot ID: "local" + 30 hex chars (sha256 of a fixed salt
+// and the label). 35 chars total, non-empty, stable, and clearly synthetic —
+// never a real Cloudflare resource ID.
+function localId(label) {
+  const digest = createHash('sha256').update(`${LOCAL_SALT}:${label}`).digest('hex');
+  return `local${digest.slice(0, 30)}`;
 }
 
 function isSet(value) {
@@ -183,6 +217,21 @@ function render(mode) {
           const pattern = new RegExp(`(${escapedKey}\\s*=\\s*)"[^"]*"`, 'g');
           config = config.replace(pattern, `$1${JSON.stringify(value)}`);
         }
+      } else if (mode === 'local') {
+        // Pass 1: fill every $$ marker with a deterministic local-pilot ID.
+        for (const [envKey, marker] of Object.entries(MARKER_MAP)) {
+          const escaped = escapeRegExp(marker);
+          // Callback form so the $$ marker in the trailing comment is preserved
+          // verbatim (the replacement string is used literally, no $$ escaping).
+          const pattern = new RegExp(`("[^"]*")(\\s*#\\s*${escaped})`, 'g');
+          config = config.replace(pattern, (_full, _quoted, suffix) => `${JSON.stringify(localId(envKey))}${suffix}`);
+        }
+        // Pass 2: [vars] values from local-pilot defaults (all quoted/non-empty).
+        for (const [tomlKey, value] of Object.entries(LOCAL_VAR_DEFAULTS)) {
+          const escapedKey = escapeRegExp(tomlKey);
+          const pattern = new RegExp(`(${escapedKey}\\s*=\\s*)"[^"]*"`, 'g');
+          config = config.replace(pattern, `$1${JSON.stringify(value)}`);
+        }
       } else {
         // Pass 1: fill every $$ marker from the (validated) environment.
         for (const [envKey, marker] of Object.entries(MARKER_MAP)) {
@@ -213,7 +262,7 @@ function render(mode) {
     })
     .then(() => mkdir(OUTPUT_DIR, { recursive: true }))
     .then(() => {
-      const output = mode === 'ci' ? CI_OUTPUT : PRODUCTION_OUTPUT;
+      const output = mode === 'ci' ? CI_OUTPUT : mode === 'local' ? LOCAL_OUTPUT : PRODUCTION_OUTPUT;
       return writeFile(output, config).then(() => output);
     })
     .then((output) => {
@@ -236,7 +285,7 @@ function main() {
     failUsage();
     return;
   }
-  const mode = modeArgs[0] === MODE_CI ? 'ci' : 'production';
+  const mode = modeArgs[0] === MODE_CI ? 'ci' : modeArgs[0] === MODE_LOCAL ? 'local' : 'production';
   render(mode);
 }
 

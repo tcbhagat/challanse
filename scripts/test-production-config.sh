@@ -271,6 +271,16 @@ assert "edge worker cache volume must be mounted read-only and non-executable" \
   grep -Fq '/app/apps/edge/.wrangler:rw,noexec,nosuid,uid=1000,gid=1000,mode=0700' deploy/local/docker-compose.yml
 assert "reviewer worker cache volume must be mounted read-only and non-executable" \
   grep -Fq '/app/apps/reviewer/.wrangler:rw,noexec,nosuid,uid=1000,gid=1000,mode=0700' deploy/local/docker-compose.yml
+assert "local edge service must render and consume the rendered local config" \
+  grep -Fq 'render-edge-config.mjs --local' deploy/local/docker-compose.yml
+assert "edge rendered-config dir must be a writable quoted tmpfs" \
+  grep -Fq '/app/apps/edge/config:rw,noexec,nosuid,uid=1000,gid=1000,mode=0700' deploy/local/docker-compose.yml
+assert "edge config renderer must support the --local mode" \
+  grep -Fq 'MODE_LOCAL' scripts/render-edge-config.mjs
+assert "local edge service must apply D1 migrations before starting dev" \
+  grep -Fq 'wrangler d1 migrations apply challanse-core --local' deploy/local/docker-compose.yml
+assert "edge rendered-config tmpfs must have headroom for local D1/KV/R2 state" \
+  grep -Fq '/app/apps/edge/config:rw,noexec,nosuid,uid=1000,gid=1000,mode=0700,size=128m' deploy/local/docker-compose.yml
 assert "local pilot must recreate containers on startup" grep -Fq 'compose up -d --force-recreate' scripts/local-pilot.sh
 start_stack_body="$(sed -n '/^start_stack() {/,/^}/p' scripts/local-pilot.sh)"
 printf '%s\n' "$start_stack_body" | grep -Fq 'compose build' \
