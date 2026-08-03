@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS audit_chains (
 -- ── Audit events (immutable, hash-linked) ────────────────────────────────────
 CREATE TABLE IF NOT EXISTS audit_events (
   event_id TEXT PRIMARY KEY,
-  chain_id TEXT NOT REFERENCES audit_chains(chain_id),
+  chain_id TEXT NOT NULL REFERENCES audit_chains(chain_id),
   event_type TEXT NOT NULL,
   event_json TEXT NOT NULL,           -- canonical JSON string
   previous_hash TEXT NOT NULL DEFAULT '',

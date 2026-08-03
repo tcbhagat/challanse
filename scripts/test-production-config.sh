@@ -281,6 +281,10 @@ assert "local edge service must apply D1 migrations before starting dev" \
   grep -Fq 'wrangler d1 migrations apply challanse-core --local' deploy/local/docker-compose.yml
 assert "edge rendered-config tmpfs must have headroom for local D1/KV/R2 state" \
   grep -Fq '/app/apps/edge/config:rw,noexec,nosuid,uid=1000,gid=1000,mode=0700,size=128m' deploy/local/docker-compose.yml
+assert "D1 migrations must not contain the SQLite 'NOT REFERENCES' syntax typo" \
+  bash -c '! grep -rn "NOT REFERENCES" apps/edge/migrations'
+assert "D1 migration 0008 must not re-add sites columns already defined in 0001" \
+  bash -c '! grep -q "ALTER TABLE sites ADD COLUMN active" apps/edge/migrations/0008_enrichment_core.sql'
 assert "local pilot must recreate containers on startup" grep -Fq 'compose up -d --force-recreate' scripts/local-pilot.sh
 start_stack_body="$(sed -n '/^start_stack() {/,/^}/p' scripts/local-pilot.sh)"
 printf '%s\n' "$start_stack_body" | grep -Fq 'compose build' \
