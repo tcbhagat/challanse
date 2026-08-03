@@ -273,10 +273,14 @@ export default {
   },
   // ── Queue consumer: receipt-enrichment ──────────────────────────────
   // Drains receipts out of the enrichment queue by marking them
-  // enrichment-complete (RECEIVED → NEEDS_REVIEW). Local (wrangler dev --local)
-  // queue delivery is not guaranteed, so handleCompleteUpload also drains
-  // inline when ENVIRONMENT === 'local-pilot'.
+  // enrichment-complete (RECEIVED → NEEDS_REVIEW). The consumer binding is
+  // intentionally NOT declared in wrangler.toml: production enrichment runs on
+  // the AWS SQS pipeline in services/enrichment, so this handler is a no-op
+  // outside the local-pilot runtime. handleCompleteUpload also drains inline
+  // for local-pilot because `wrangler dev --local` does not guarantee queue
+  // delivery.
   async queue(batch: MessageBatch, env: Env): Promise<void> {
+    if (env.ENVIRONMENT !== 'local-pilot') return;
     for (const message of batch.messages) {
       const body = message.body as {
         type?: string;

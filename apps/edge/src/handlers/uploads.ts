@@ -9,6 +9,7 @@ import { uuid, exec, first, getSite } from '../db';
 import { appendAuditEvent, uploadCreatedEvent, uploadCompletedEvent } from '../audit-chain';
 import { upsertGraphNode, ensureReceiptInGraph } from '../graph';
 import { drainReceiptEnrichment } from '../enrichment-drain';
+import { isValidReceiptId } from '../receipt-id';
 import type { Env } from '../types';
 
 const UPLOAD_PART_SIZE = 256_000;
@@ -49,6 +50,12 @@ export async function handleCreateUpload(request: Request, env: Env): Promise<Re
   // Validate required fields
   if (!body.receiptId || !body.vendorId || !body.capturedAtUnix || body.capturedQuantity === undefined || !body.imageSha256 || !body.totalBytes) {
     return error(request, env, 400, 'MISSING_FIELDS', 'Required fields: receiptId, vendorId, capturedAtUnix, capturedQuantity, imageSha256, totalBytes.');
+  }
+
+  // receiptId becomes part of the R2 object key (receipts/{org}/{site}/{id}.webp),
+  // so require a UUID v4 to keep keys predictable and prevent path traversal.
+  if (!isValidReceiptId(body.receiptId)) {
+    return error(request, env, 400, 'INVALID_RECEIPT_ID', 'receiptId must be a UUID v4.');
   }
 
   if (body.totalBytes > MAX_IMAGE_BYTES) {
@@ -386,7 +393,7 @@ export async function handleCompleteUpload(request: Request, env: Env, uploadId:
   });
 
   // Local pilot: drain inline because `wrangler dev --local` does not guarantee
-  // queue delivery. Idempotent with the queue consumer ([[queues.consumers]]).
+  // queue delivery. Idempotent with the local-pilot queue handler in index.ts.
   if (env.ENVIRONMENT === 'local-pilot') {
     await drainReceiptEnrichment(db, {
       receiptId: session.receipt_id,

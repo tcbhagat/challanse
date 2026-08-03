@@ -4,9 +4,10 @@
 // moves the receipt from RECEIVED to NEEDS_REVIEW so the local-pilot queueDepth
 // (COUNT of RECEIVED receipts) reaches zero once enrichment is done.
 //
-// Used by both the queue consumer ([[queues.consumers]] receipt-enrichment) and
-// the inline local-pilot drain in handleCompleteUpload, which exists because
-// `wrangler dev --local` does not guarantee queue delivery.
+// Used by the local-pilot queue handler (src/index.ts, a no-op outside the
+// local-pilot runtime) and the inline local-pilot drain in handleCompleteUpload,
+// which exists because `wrangler dev --local` does not guarantee queue delivery.
+// Production enrichment runs on the AWS SQS pipeline in services/enrichment.
 
 import { exec } from './db';
 

@@ -10,6 +10,15 @@ import { appendAuditEvent, deviceEnrolledEvent } from '../audit-chain';
 import { upsertGraphNode, ensureDeviceInGraph } from '../graph';
 import type { Env } from '../types';
 
+// Mobile PilotConfiguration.pilotMode (see apps/mobile/src/config/deviceEnrollment.ts).
+// Synthetic demo mode is reserved for the local pilot and development runtimes so
+// the mobile app can never emit synthetic receipts against a production server.
+export function pilotModeFor(environment: string | undefined): 'synthetic-demo' | 'controlled-client-pilot' {
+  return environment === 'local-pilot' || environment === 'development'
+    ? 'synthetic-demo'
+    : 'controlled-client-pilot';
+}
+
 // ─── POST /v1/devices/enroll ─────────────────────────────────────────────────
 
 export async function handleEnroll(request: Request, env: Env): Promise<Response> {
@@ -138,7 +147,7 @@ export async function handleBootstrap(request: Request, env: Env): Promise<Respo
     turnstileSiteKey: env.TURNSTILE_SITE_KEY || '',
     playIntegrityCloudProjectNumber: env.PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER || '',
     // Mobile PilotConfiguration shape (see apps/mobile/src/config/deviceEnrollment.ts)
-    pilotMode: 'synthetic-demo',
+    pilotMode: pilotModeFor(env.ENVIRONMENT),
     site: { id: site.id, name: site.name },
     device: { id: device.id, name: device.name },
     vendors: vendors.map((v) => ({
