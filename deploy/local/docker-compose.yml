@@ -175,7 +175,7 @@ services:
       context: ../..
       dockerfile: deploy/local/Dockerfile.web
     working_dir: /app/apps/edge
-    command: ["sh", "-c", "node ../../scripts/render-edge-config.mjs --local && npx wrangler d1 migrations apply challanse-core --local --config config/edge.local.toml && npx wrangler dev --local --ip 0.0.0.0 --port 8787 --config config/edge.local.toml"]
+    command: ["sh", "-c", "node ../../scripts/render-edge-config.mjs --local && npx wrangler d1 migrations apply challanse-core --local --config config/edge.local.toml && npx wrangler d1 execute challanse-core --local --config config/edge.local.toml --file ../../scripts/seed-d1-pilot.sql && npx wrangler dev --local --ip 0.0.0.0 --port 8787 --config config/edge.local.toml"]
     volumes:
       - ${CHALLANSE_RUNTIME_ROOT:?Set CHALLANSE_RUNTIME_ROOT}/edge.dev.vars:/app/apps/edge/.dev.vars:ro
     depends_on:

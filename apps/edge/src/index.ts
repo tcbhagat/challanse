@@ -37,6 +37,10 @@ import { handleChainStatus, handleChainVerifyDag, handleAlertsList, handleAlertA
 // Event/ingest endpoints
 import { handleReceiptEvent, handleReviewEvent, handleTelemetryEvent } from './handlers/events';
 
+// Local pilot bridge endpoints (ENVIRONMENT=local-pilot only)
+import { handleLocalStatus, handleLocalEnrollmentCodes } from './handlers/local';
+import { drainReceiptEnrichment } from './enrichment-drain';
+
 // ─── Route Table ──────────────────────────────────────────────────────────────
 
 interface RouteDef {
@@ -110,6 +114,10 @@ const routes: RouteDef[] = [
   { method: 'POST',   pattern: '/v1/events/receipts',  handler: handleReceiptEvent,  auth: 'none' },
   { method: 'POST',   pattern: '/v1/events/reviews',   handler: handleReviewEvent,   auth: 'none' },
   { method: 'POST',   pattern: '/v1/events/telemetry', handler: handleTelemetryEvent,auth: 'none' },
+
+  // ── Local pilot bridge routes (ENVIRONMENT=local-pilot only) ────────
+  { method: 'GET',    pattern: '/v1/local/status',           handler: handleLocalStatus,          auth: 'none' },
+  { method: 'POST',   pattern: '/v1/local/enrollment-codes', handler: handleLocalEnrollmentCodes, auth: 'none' },
 ];
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -261,6 +269,27 @@ export default {
           ? 'The data service could not complete the request.'
           : 'An internal error occurred processing the request.',
       );
+    }
+  },
+  // ── Queue consumer: receipt-enrichment ──────────────────────────────
+  // Drains receipts out of the enrichment queue by marking them
+  // enrichment-complete (RECEIVED → NEEDS_REVIEW). Local (wrangler dev --local)
+  // queue delivery is not guaranteed, so handleCompleteUpload also drains
+  // inline when ENVIRONMENT === 'local-pilot'.
+  async queue(batch: MessageBatch, env: Env): Promise<void> {
+    for (const message of batch.messages) {
+      const body = message.body as {
+        type?: string;
+        receiptId?: string;
+        organizationId?: string;
+        siteId?: string;
+      } | null;
+      if (!body || body.type !== 'receipt_enrichment' || !body.receiptId) continue;
+      await drainReceiptEnrichment(env.DB, {
+        receiptId: body.receiptId,
+        organizationId: body.organizationId,
+        siteId: body.siteId,
+      });
     }
   },
 } satisfies ExportedHandler<Env>;

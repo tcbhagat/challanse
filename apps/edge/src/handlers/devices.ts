@@ -4,7 +4,7 @@
 
 import { error, json } from '../responses';
 import { authenticateDevice, authenticateDeviceNonce, verifyPlayIntegrity, DeviceAuthError } from '../auth';
-import { uuid, exec, first, getSite, getOrganization } from '../db';
+import { uuid, exec, first, getSite, getOrganization, getVendorsBySite } from '../db';
 import { sha256Hex, randomEnrollmentCode } from '../security';
 import { appendAuditEvent, deviceEnrolledEvent } from '../audit-chain';
 import { upsertGraphNode, ensureDeviceInGraph } from '../graph';
@@ -97,7 +97,7 @@ export async function handleEnroll(request: Request, env: Env): Promise<Response
     deviceId,
     siteId: codeRow.site_id,
     organizationId: codeRow.organization_id,
-    token: rawToken,
+    deviceToken: rawToken,
   }, 201);
 }
 
@@ -125,6 +125,8 @@ export async function handleBootstrap(request: Request, env: Env): Promise<Respo
     return error(request, env, 404, 'ORGANIZATION_NOT_FOUND', 'The organization was not found.');
   }
 
+  const vendors = await getVendorsBySite(db, device.siteId);
+
   return json(request, env, {
     siteId: site.id,
     siteName: site.name,
@@ -135,6 +137,20 @@ export async function handleBootstrap(request: Request, env: Env): Promise<Respo
     deviceLimit: org.device_limit,
     turnstileSiteKey: env.TURNSTILE_SITE_KEY || '',
     playIntegrityCloudProjectNumber: env.PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER || '',
+    // Mobile PilotConfiguration shape (see apps/mobile/src/config/deviceEnrollment.ts)
+    pilotMode: 'synthetic-demo',
+    site: { id: site.id, name: site.name },
+    device: { id: device.id, name: device.name },
+    vendors: vendors.map((v) => ({
+      id: v.id,
+      name: v.name,
+      initials: v.initials,
+      color: v.color,
+    })),
+    limits: {
+      dailyReceipts: site.daily_receipt_limit,
+      imageBytes: site.image_byte_limit,
+    },
   });
 }
 

@@ -45,6 +45,15 @@ queue = "receipt-enrichment"
 binding = "AUDIT_QUEUE"
 queue = "audit-events"
 
+# Consumer bindings deliver receipt-enrichment messages to the Worker's queue
+# handler. Local (wrangler dev --local) delivery is not guaranteed, so the
+# local-pilot path also drains inline in handleCompleteUpload.
+[[queues.consumers]]
+queue = "receipt-enrichment"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+
 # ─── Environment Variables ──────────────────────────────────────────────────
 [vars]
 ALLOWED_ORIGINS = "https://challanse.constrovet.com,https://review.challanse.constrovet.com"

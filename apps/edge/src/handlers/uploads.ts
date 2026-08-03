@@ -8,6 +8,7 @@ import { authenticateDevice, authenticateDeviceNonce, DeviceAuthError } from '..
 import { uuid, exec, first, getSite } from '../db';
 import { appendAuditEvent, uploadCreatedEvent, uploadCompletedEvent } from '../audit-chain';
 import { upsertGraphNode, ensureReceiptInGraph } from '../graph';
+import { drainReceiptEnrichment } from '../enrichment-drain';
 import type { Env } from '../types';
 
 const UPLOAD_PART_SIZE = 256_000;
@@ -87,11 +88,12 @@ export async function handleCreateUpload(request: Request, env: Env): Promise<Re
   // Create receipt record
   await exec(
     db,
-    `INSERT INTO receipts (id, site_id, device_id, vendor_id, captured_at_unix, captured_quantity, image_key, image_bytes, image_sha256, status, version, enrichment_status, mime_type, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'UPLOADING', 1, 'PENDING', ?, ?, ?)`,
+    `INSERT INTO receipts (id, site_id, device_id, vendor_id, captured_at_unix, captured_quantity, image_key, image_bytes, image_sha256, status, version, app_version, configuration_version, enrichment_status, mime_type, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'RECEIVED', 1, ?, ?, 'PENDING', ?, ?, ?)`,
     body.receiptId, device.siteId, device.id, body.vendorId,
     body.capturedAtUnix, body.capturedQuantity, imageKey,
-    body.imageSha256, body.mimeType ?? 'image/webp',
+    body.imageSha256, body.appVersion ?? 'unknown', body.configurationVersion ?? 1,
+    body.mimeType ?? 'image/webp',
     new Date().toISOString(), new Date().toISOString(),
   );
 
@@ -333,7 +335,7 @@ export async function handleCompleteUpload(request: Request, env: Env, uploadId:
   const now = new Date().toISOString();
   await exec(
     db,
-    "UPDATE receipts SET image_bytes = ?, status = 'PENDING_REVIEW', enrichment_status = 'IMAGE_STORED', updated_at = ? WHERE id = ?",
+    "UPDATE receipts SET image_bytes = ?, status = 'RECEIVED', enrichment_status = 'IMAGE_STORED', updated_at = ? WHERE id = ?",
     totalBytes, now, session.receipt_id,
   );
 
@@ -367,7 +369,7 @@ export async function handleCompleteUpload(request: Request, env: Env, uploadId:
     {
       image_bytes: totalBytes,
       image_sha256: actualSha256,
-      status: 'PENDING_REVIEW',
+      status: 'RECEIVED',
       captured_at: now,
       vendor_id: null, // will be filled when the receipt is enriched
     },
@@ -383,10 +385,20 @@ export async function handleCompleteUpload(request: Request, env: Env, uploadId:
     imageBytes: totalBytes,
   });
 
+  // Local pilot: drain inline because `wrangler dev --local` does not guarantee
+  // queue delivery. Idempotent with the queue consumer ([[queues.consumers]]).
+  if (env.ENVIRONMENT === 'local-pilot') {
+    await drainReceiptEnrichment(db, {
+      receiptId: session.receipt_id,
+      organizationId: device.organizationId,
+      siteId: device.siteId,
+    });
+  }
+
   return json(request, env, {
     receiptId: session.receipt_id,
     imageBytes: totalBytes,
     imageSha256: actualSha256,
-    status: 'PENDING_REVIEW',
+    status: 'RECEIVED',
   }, 202);
 }
