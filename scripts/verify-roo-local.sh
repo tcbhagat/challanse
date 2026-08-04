@@ -2,7 +2,7 @@
 set -euo pipefail
 
 readonly OLLAMA_URL="${OLLAMA_URL:-http://127.0.0.1:11434}"
-readonly OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5-coder:7b}"
+readonly OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:7b}"
 
 for command_name in curl jq; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
@@ -43,7 +43,42 @@ if [[ "$content" != *"ROO_LOCAL_OK"* ]]; then
   exit 1
 fi
 
+http_code="$(curl --silent --show-error \
+  --connect-timeout 5 \
+  --max-time 120 \
+  --output "$response_file" \
+  --write-out '%{http_code}' \
+  --header 'Content-Type: application/json' \
+  --data "$(jq -cn --arg model "$OLLAMA_MODEL" '{
+    model: $model,
+    stream: false,
+    messages: [{role: "user", content: "Use inspect_file to inspect package.json. Do not answer directly."}],
+    tools: [{
+      type: "function",
+      function: {
+        name: "inspect_file",
+        description: "Inspect a file",
+        parameters: {
+          type: "object",
+          properties: {path: {type: "string"}},
+          required: ["path"]
+        }
+      }
+    }],
+    options: {temperature: 0, num_ctx: 16384}
+  }')" \
+  "$OLLAMA_URL/api/chat")"
+
+if [[ "$http_code" != "200" ]] || ! jq -e '
+  .message.tool_calls[0].function.name == "inspect_file" and
+  .message.tool_calls[0].function.arguments.path == "package.json"
+' "$response_file" >/dev/null; then
+  printf 'ERROR: Ollama model does not provide Roo-compatible native tool calls.\n' >&2
+  exit 1
+fi
+
 printf 'GREEN: Roo local provider is responding.\n'
+printf 'GREEN: Roo native tool calling is responding.\n'
 printf 'Provider: Ollama\n'
 printf 'Base URL: %s\n' "$OLLAMA_URL"
 printf 'Model: %s\n' "$OLLAMA_MODEL"
