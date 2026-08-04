@@ -2,7 +2,7 @@
 set -euo pipefail
 
 readonly OLLAMA_URL="${OLLAMA_URL:-http://127.0.0.1:11434}"
-readonly OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:7b}"
+readonly OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5-coder:7b}"
 
 for command_name in curl jq; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
