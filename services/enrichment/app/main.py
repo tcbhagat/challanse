@@ -300,7 +300,8 @@ async def local_login(request: Request, settings=Depends(get_settings)) -> Respo
     except (LocalAuthError, UnicodeDecodeError, ValueError):
         return HTMLResponse(login_page("Sign-in failed or the account is temporarily locked."), status_code=401, headers={"Cache-Control": "no-store"})
     safe_next = safe_local_next_path(next_path)
-    response = RedirectResponse(url=safe_next, status_code=303)
+    redirect_target = "/operator" if safe_next == "/operator" else "/"
+    response = RedirectResponse(url=redirect_target, status_code=303)
     max_age = settings.local_session_ttl_minutes * 60
     response.set_cookie(SESSION_COOKIE, token, max_age=max_age, secure=True, httponly=True, samesite="strict", path="/")
     response.set_cookie(CSRF_COOKIE, csrf, max_age=max_age, secure=True, httponly=False, samesite="strict", path="/")

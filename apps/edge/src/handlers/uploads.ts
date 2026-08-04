@@ -7,13 +7,71 @@ import { error, json } from '../responses';
 import { authenticateDevice, authenticateDeviceNonce, DeviceAuthError } from '../auth';
 import { uuid, exec, first, getSite } from '../db';
 import { appendAuditEvent, uploadCreatedEvent, uploadCompletedEvent } from '../audit-chain';
-import { upsertGraphNode, ensureReceiptInGraph } from '../graph';
+import {
+  ensureDeviceInGraph,
+  ensureReceiptInGraph,
+  ensureSiteInGraph,
+  ensureVendorInGraph,
+  upsertGraphNode,
+} from '../graph';
 import { drainReceiptEnrichment } from '../enrichment-drain';
 import { isValidReceiptId } from '../receipt-id';
 import type { Env } from '../types';
 
 const UPLOAD_PART_SIZE = 256_000;
 const MAX_IMAGE_BYTES = 10_000_000; // 10MB max image
+
+type ReceiptGraphDevice = {
+  id: string;
+  siteId: string;
+  organizationId: string;
+};
+
+export async function ensureCompletedReceiptGraph(
+  db: D1Database,
+  device: ReceiptGraphDevice,
+  receiptId: string,
+  imageBytes: number,
+  imageSha256: string,
+): Promise<void> {
+  await upsertGraphNode(db, device.organizationId, 'Organization', {
+    id: device.organizationId,
+  });
+  await ensureSiteInGraph(db, device.siteId, device.organizationId, {
+    id: device.siteId,
+  });
+  await ensureDeviceInGraph(db, device.id, device.siteId, device.organizationId, {
+    id: device.id,
+  });
+  const receipt = await first<{ vendor_id: string; captured_at_unix: number }>(
+    db,
+    'SELECT vendor_id, captured_at_unix FROM receipts WHERE id = ? AND site_id = ?',
+    receiptId,
+    device.siteId,
+  );
+  if (!receipt) {
+    throw new Error('Completed receipt record is missing.');
+  }
+  await ensureVendorInGraph(db, receipt.vendor_id, device.siteId, {
+    id: receipt.vendor_id,
+    organization_id: device.organizationId,
+  });
+  await ensureReceiptInGraph(
+    db,
+    receiptId,
+    device.id,
+    receipt.vendor_id,
+    device.siteId,
+    device.organizationId,
+    {
+      image_bytes: imageBytes,
+      image_sha256: imageSha256,
+      status: 'RECEIVED',
+      captured_at: receipt.captured_at_unix,
+      vendor_id: receipt.vendor_id,
+    },
+  );
+}
 
 // ─── POST /v1/uploads ────────────────────────────────────────────────────────
 
@@ -359,28 +417,7 @@ export async function handleCompleteUpload(request: Request, env: Env, uploadId:
     session.receipt_id, device.id, device.siteId, device.organizationId, totalBytes,
   ));
 
-  // Record in property graph
-  // Ensure nodes for receipt context exist
-  await upsertGraphNode(db, device.organizationId, 'Organization', {
-    id: device.organizationId,
-  });
-  // Create Receipt node with edges to Device (CAPTURED_BY), Vendor (FROM_VENDOR), Site (RECORDED_AT)
-  const receiptBody = JSON.parse(request.headers.get('X-Receipt-Meta') || '{}');
-  await ensureReceiptInGraph(
-    db,
-    session.receipt_id,
-    device.id,
-    '', // vendor_id is on the receipt record; we'll update after lookup
-    device.siteId,
-    device.organizationId,
-    {
-      image_bytes: totalBytes,
-      image_sha256: actualSha256,
-      status: 'RECEIVED',
-      captured_at: now,
-      vendor_id: null, // will be filled when the receipt is enriched
-    },
-  );
+  await ensureCompletedReceiptGraph(db, device, session.receipt_id, totalBytes, actualSha256);
 
   // Send to enrichment queue
   await env.RECEIPT_QUEUE.send({

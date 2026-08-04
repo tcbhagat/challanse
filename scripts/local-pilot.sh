@@ -102,6 +102,7 @@ load_env() {
   mkdir -p "$RUNTIME_ROOT/tls"
   chmod 700 "$RUNTIME_ROOT"
   chmod 755 "$RUNTIME_ROOT/tls"
+  ensure_edge_vars
   cp "$EDGE_VARS" "$RUNTIME_ROOT/edge.dev.vars"
   cp "$REVIEWER_VARS" "$RUNTIME_ROOT/reviewer.dev.vars"
   cp "$TLS_DIR"/*.crt "$TLS_DIR"/*.key "$RUNTIME_ROOT/tls/"
@@ -415,6 +416,21 @@ ensure_local_test_config() {
   fi
   chmod 600 "$ENV_FILE"
 }
+ensure_edge_vars() {
+  # Pre-2026 provisions wrote edge.dev.vars without DEVICE_TOKEN_PEPPER. Without
+  # it the edge enrolls devices with an empty pepper but rejects every token at
+  # /v1/mobile/bootstrap (DEVICE_UNAUTHORIZED). Heal in place from local.env —
+  # the same pepper the API already holds — without rotating any secrets.
+  [[ -f "$EDGE_VARS" && -f "$ENV_FILE" ]] || return
+  if ! grep -q '^DEVICE_TOKEN_PEPPER=' "$EDGE_VARS"; then
+    local pepper
+    pepper="$(sed -n 's/^DEVICE_TOKEN_PEPPER=//p' "$ENV_FILE" | head -n 1)"
+    if [[ -n "$pepper" ]]; then
+      printf 'DEVICE_TOKEN_PEPPER=%s\n' "$pepper" >>"$EDGE_VARS"
+      chmod 600 "$EDGE_VARS"
+    fi
+  fi
+}
 record_local_runtime_manifest() {
   local apk="$ROOT/apps/mobile/android/app/build/outputs/apk/localPilot/app-localPilot.apk"
   local apk_sha="" model_digest="" images_json source_clean source_state_sha
@@ -657,6 +673,7 @@ provision() {
   if [[ -e "$ENV_FILE" ]]; then
     ensure_local_auth_key
     ensure_local_test_config
+    ensure_edge_vars
     validate_existing_provision_state "$lan_ip"
     printf 'Validated existing local secrets and pilot CA; resuming provisioning without rotation.\n'
   else

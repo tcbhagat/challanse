@@ -115,8 +115,13 @@ const CI_VAR_DEFAULTS = {
 // Local-pilot defaults used by --local. The local compose frontend network
 // reaches the FastAPI enrichment service as "api" on port 8080; the mounted
 // .dev.vars still override these at runtime via `wrangler dev`.
+//
+// ENVIRONMENT MUST be 'local-pilot': every local-pilot runtime feature (the
+// /v1/local/* bridge endpoints, the receipt-enrichment queue drain, and the
+// reviewer gateway-secret path) is gated on ENVIRONMENT === 'local-pilot'.
+// Rendering 'local' here silently disables the entire supervised pilot.
 const LOCAL_VAR_DEFAULTS = {
-  ENVIRONMENT: 'local',
+  ENVIRONMENT: 'local-pilot',
   ACCESS_TEAM_DOMAIN: 'local-access-team.example.com',
   ACCESS_AUD: 'local-access-audience',
   ENRICHMENT_URL: 'http://api:8080',

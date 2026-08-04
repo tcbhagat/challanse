@@ -177,7 +177,12 @@ services:
     working_dir: /app/apps/edge
     command: ["sh", "-c", "node ../../scripts/render-edge-config.mjs --local && npx wrangler d1 migrations apply challanse-core --local --config config/edge.local.toml && npx wrangler d1 execute challanse-core --local --config config/edge.local.toml --file ../../scripts/seed-d1-pilot.sql && npx wrangler dev --local --ip 0.0.0.0 --port 8787 --config config/edge.local.toml"]
     volumes:
-      - ${CHALLANSE_RUNTIME_ROOT:?Set CHALLANSE_RUNTIME_ROOT}/edge.dev.vars:/app/apps/edge/.dev.vars:ro
+      # Wrangler resolves .dev.vars next to the config file it is started with
+      # (config/edge.local.toml), so the vars file must be mounted into the
+      # config directory. Mounting it at /app/apps/edge/.dev.vars is silently
+      # ignored and starves the worker of ENVIRONMENT=local-pilot plus secrets
+      # (gateway secret, HMAC key, device pepper).
+      - ${CHALLANSE_RUNTIME_ROOT:?Set CHALLANSE_RUNTIME_ROOT}/edge.dev.vars:/app/apps/edge/config/.dev.vars:ro
     depends_on:
       api:
         condition: service_healthy

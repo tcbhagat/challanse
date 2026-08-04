@@ -40,7 +40,9 @@ ALTER TABLE reviewers ADD COLUMN updated_at TEXT NOT NULL DEFAULT CURRENT_TIMEST
 -- SQLite cannot ALTER an existing column's default or check, so the table is
 -- rebuilt with handler-compatible defaults, checks, and additional columns
 -- (organization_id, uploaded_bytes, declared_sha256, cdn_domain, url_path,
--- uploaded_at). upload_parts is untouched; it re-binds to the new table.
+-- uploaded_at). Existing upload_parts must be copied before the old parent is
+-- dropped because its ON DELETE CASCADE would otherwise erase interrupted
+-- upload progress during the upgrade.
 CREATE TABLE upload_sessions_v2 (
   id TEXT PRIMARY KEY,
   receipt_id TEXT NOT NULL UNIQUE,
@@ -63,6 +65,10 @@ CREATE TABLE upload_sessions_v2 (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Backfill column/value alignment (18 target columns, 18 SELECT values):
+--   cdn_domain = ''        (NOT NULL DEFAULT '')
+--   url_path   = ''        (NOT NULL DEFAULT '')
+--   uploaded_at = NULL     (nullable; legacy rows have no completed-upload time)
 INSERT INTO upload_sessions_v2 (
   id, receipt_id, site_id, device_id, organization_id, metadata_json,
   total_bytes, uploaded_bytes, image_sha256, declared_sha256, mime_type,
@@ -76,14 +82,35 @@ SELECT us.id, us.receipt_id, us.site_id, us.device_id, s.organization_id,
          WHEN 'COMPLETE' THEN 'COMPLETED'
          ELSE 'ABORTED'
        END,
-       '', NULL, COALESCE(us.expires_at, CURRENT_TIMESTAMP),
+       '', '', NULL, COALESCE(us.expires_at, CURRENT_TIMESTAMP),
        us.created_at, us.updated_at
   FROM upload_sessions us
   LEFT JOIN sites s ON s.id = us.site_id;
 
+CREATE TABLE upload_parts_backup AS
+SELECT upload_id, part_number, byte_offset, byte_length, sha256, object_key, created_at
+  FROM upload_parts;
+DROP TABLE upload_parts;
 DROP TABLE upload_sessions;
 ALTER TABLE upload_sessions_v2 RENAME TO upload_sessions;
 CREATE INDEX upload_sessions_expiry_idx ON upload_sessions(status, expires_at);
+
+CREATE TABLE upload_parts (
+  upload_id TEXT NOT NULL REFERENCES upload_sessions(id) ON DELETE CASCADE,
+  part_number INTEGER NOT NULL CHECK(part_number >= 0),
+  byte_offset INTEGER NOT NULL CHECK(byte_offset >= 0),
+  byte_length INTEGER NOT NULL CHECK(byte_length > 0 AND byte_length <= 256000),
+  sha256 TEXT NOT NULL,
+  object_key TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(upload_id, part_number)
+);
+INSERT INTO upload_parts (
+  upload_id, part_number, byte_offset, byte_length, sha256, object_key, created_at
+)
+SELECT upload_id, part_number, byte_offset, byte_length, sha256, object_key, created_at
+  FROM upload_parts_backup;
+DROP TABLE upload_parts_backup;
 
 -- ── device_nonces (nonce replay protection) ──────────────────────────────────
 CREATE TABLE device_nonces (
