@@ -2,7 +2,7 @@
 set -euo pipefail
 
 readonly OLLAMA_URL="${OLLAMA_URL:-http://127.0.0.1:11434}"
-readonly OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:7b}"
+readonly OLLAMA_MODEL="${OLLAMA_MODEL:-llama3.2:3b}"
 
 for command_name in curl jq; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
@@ -14,9 +14,9 @@ done
 response_file="$(mktemp)"
 trap 'rm -f "$response_file"' EXIT
 
-http_code="$(curl --silent --show-error \
+if ! http_code="$(curl --silent --show-error \
   --connect-timeout 5 \
-  --max-time 120 \
+  --max-time 60 \
   --output "$response_file" \
   --write-out '%{http_code}' \
   --header 'Content-Type: application/json' \
@@ -26,7 +26,10 @@ http_code="$(curl --silent --show-error \
     messages: [{role: "user", content: "Reply with exactly ROO_LOCAL_OK"}],
     options: {temperature: 0}
   }')" \
-  "$OLLAMA_URL/v1/chat/completions")"
+  "$OLLAMA_URL/v1/chat/completions")"; then
+  printf 'ERROR: Ollama is unavailable or busy. Stop the active Roo task, wait 10 seconds, and retry.\n' >&2
+  exit 1
+fi
 
 if [[ "$http_code" != "200" ]]; then
   printf 'ERROR: Ollama returned HTTP %s.\n' "$http_code" >&2
@@ -43,9 +46,9 @@ if [[ "$content" != *"ROO_LOCAL_OK"* ]]; then
   exit 1
 fi
 
-http_code="$(curl --silent --show-error \
+if ! http_code="$(curl --silent --show-error \
   --connect-timeout 5 \
-  --max-time 120 \
+  --max-time 90 \
   --output "$response_file" \
   --write-out '%{http_code}' \
   --header 'Content-Type: application/json' \
@@ -65,9 +68,12 @@ http_code="$(curl --silent --show-error \
         }
       }
     }],
-    options: {temperature: 0, num_ctx: 16384}
+    options: {temperature: 0, num_ctx: 4096}
   }')" \
-  "$OLLAMA_URL/api/chat")"
+  "$OLLAMA_URL/api/chat")"; then
+  printf 'ERROR: Ollama tool verification timed out. Stop the active Roo task, wait 10 seconds, and retry.\n' >&2
+  exit 1
+fi
 
 if [[ "$http_code" != "200" ]] || ! jq -e '
   .message.tool_calls[0].function.name == "inspect_file" and
