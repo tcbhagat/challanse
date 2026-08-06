@@ -9,16 +9,18 @@
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Constrovet">
   <meta property="og:title" content="ChallanSe | Simple Site Receipt Capture">
-  <meta property="og:description" content="A simpler way to capture site challans and identify receipts that need review.">
+  <meta property="og:description" content="ChallanSe helps site supervisors capture challans without forms and gives project teams a clear path from field receipt to review.">
   <meta property="og:url" content="https://challanse.constrovet.com/">
   <meta name="twitter:card" content="summary">
   <meta name="twitter:title" content="ChallanSe | Simple Site Receipt Capture">
-  <meta name="twitter:description" content="A simpler way to capture site challans and identify receipts that need review.">
+  <meta name="twitter:description" content="ChallanSe helps site supervisors capture challans without forms and gives project teams a clear path from field receipt to review.">
   <link rel="icon" href="assets/ATC-logo3.png" type="image/png">
+  <!-- TODO: Optimize favicon (ATC-logo3.png) externally; ensure responsive sizes (16x16, 32x32, 192x192, 512x512) and consider WebP format. -->
   <link rel="preload" href="assets/fonts/barlow-condensed-800-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="assets/fonts/dm-sans-latin.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="assets/css/style.css?v=__CACHE_BUST__">
-  <link rel="stylesheet" href="assets/css/challanse.css?v=__CACHE_BUST__">
+  <!-- TODO: Consider adopting a CSS preprocessor (Sass/SCSS) or PostCSS for better maintainability and automation of vendor prefixes, minification, and cache busting. -->
+  <link rel="stylesheet" href="assets/css/style.css?v=__CACHE_BUST__"> <!-- TODO: Replace __CACHE_BUST__ with a dynamic value during build for caching. -->
+  <link rel="stylesheet" href="assets/css/challanse.css?v=__CACHE_BUST__"> <!-- TODO: Replace __CACHE_BUST__ with a dynamic value during build for caching. -->
   <script>document.documentElement.classList.add('cs-js');</script>
   <script type="application/ld+json">
   {
@@ -58,7 +60,7 @@
     ]
   }
   </script>
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://challenges.cloudflare.com https://challanse.constrovet.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; frame-src https://challenges.cloudflare.com; connect-src 'self' https://api.challanse.constrovet.com; base-uri 'none'; form-action 'none';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://challenges.cloudflare.com https://challanse.constrovet.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; frame-src https://challenges.cloudflare.com; connect-src 'self' https://api.challanse.constrovet.com; base-uri 'none'; form-action 'none';"> <!-- TODO: Refactor inline styles to remove 'unsafe-inline' from style-src for stronger CSP. -->
 </head>
 <body class="cs-page">
   <div id="cv-nav-placeholder"></div>
@@ -99,6 +101,7 @@
       </div>
     </section>
 
+    <!-- TODO: For off-screen sections (cs-section, cs-cta), ensure any <img> tags use loading="lazy" and decoding="async". Background images should be handled in CSS/JS with lazy-loading techniques. -->
     <section class="cs-section" aria-labelledby="cs-workflow-title">
       <div class="cs-shell">
         <div class="cs-heading">
@@ -109,9 +112,9 @@
         <div class="cs-workflow" data-cs-workflow>
           <div class="cs-workflow__tabs" role="tablist" aria-label="ChallanSe workflow">
             <button type="button" role="tab" id="cs-tab-capture" aria-controls="cs-panel-capture" aria-selected="true" tabindex="0"><span>1</span> Capture</button>
-            <button type="button" role="tab" id="cs-tab-save" aria-controls="cs-panel-save" aria-selected="false" tabindex="-1"><span>2</span> Save</button>
-            <button type="button" role="tab" id="cs-tab-send" aria-controls="cs-panel-send" aria-selected="false" tabindex="-1"><span>3</span> Send</button>
-            <button type="button" role="tab" id="cs-tab-check" aria-controls="cs-panel-check" aria-selected="false" tabindex="-1"><span>4</span> Check</button>
+            <button type="button" role="tab" id="cs-tab-save" aria-controls="cs-panel-save" aria-selected="false" tabindex="-1" aria-hidden="true"><span>2</span> Save</button>
+            <button type="button" role="tab" id="cs-tab-send" aria-controls="cs-panel-send" aria-selected="false" tabindex="-1" aria-hidden="true"><span>3</span> Send</button>
+            <button type="button" role="tab" id="cs-tab-check" aria-controls="cs-panel-check" aria-selected="false" tabindex="-1" aria-hidden="true"><span>4</span> Check</button>
           </div>
 
           <div class="cs-workflow__panels">
@@ -127,7 +130,7 @@
               </div>
             </article>
 
-            <article class="cs-workflow__panel" role="tabpanel" id="cs-panel-save" aria-labelledby="cs-tab-save" tabindex="0" hidden>
+            <article class="cs-workflow__panel" role="tabpanel" id="cs-panel-save" aria-labelledby="cs-tab-save" tabindex="-1" aria-hidden="true" hidden>
               <div class="cs-state cs-state--save" aria-hidden="true">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="m5 12 4 4L19 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
                 <strong>Saved</strong>
@@ -140,7 +143,7 @@
               </div>
             </article>
 
-            <article class="cs-workflow__panel" role="tabpanel" id="cs-panel-send" aria-labelledby="cs-tab-send" tabindex="0" hidden>
+            <article class="cs-workflow__panel" role="tabpanel" id="cs-panel-send" aria-labelledby="cs-tab-send" tabindex="-1" aria-hidden="true" hidden>
               <div class="cs-state cs-state--send" aria-hidden="true">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v5h14v-5" stroke-linecap="round" stroke-linejoin="round"/></svg>
                 <strong>Ready to send</strong>
@@ -153,7 +156,7 @@
               </div>
             </article>
 
-            <article class="cs-workflow__panel" role="tabpanel" id="cs-panel-check" aria-labelledby="cs-tab-check" tabindex="0" hidden>
+            <article class="cs-workflow__panel" role="tabpanel" id="cs-panel-check" aria-labelledby="cs-tab-check" tabindex="-1" aria-hidden="true" hidden>
               <div class="cs-state cs-state--check" aria-hidden="true">
                 <div><i></i><span>Verified</span></div>
                 <div><i></i><span>Review needed</span></div>
@@ -192,6 +195,7 @@
       </div>
     </section>
 
+    <!-- TODO: Consider lazy-loading the cs-cta section content if it contains images or heavy assets below the fold. -->
     <section class="cs-cta" aria-labelledby="cs-cta-title">
       <div class="cs-shell cs-cta__inner">
         <div>
@@ -217,7 +221,7 @@
         <label>Name<input name="name" type="text" autocomplete="name" required maxlength="100"></label>
         <label>Company<input name="company" type="text" autocomplete="organization" required maxlength="160"></label>
         <label>Work email<input name="email" type="email" autocomplete="email" required maxlength="254"></label>
-        <label>Phone <span>optional</span><input name="phone" type="tel" autocomplete="tel" maxlength="24"></label>
+        <label>Phone <span class="cs-optional-text">optional</span><input name="phone" type="tel" autocomplete="tel" maxlength="24"></label>
         <label class="cs-pilot-form__wide">What should the pilot prove? <span>optional</span><textarea name="message" maxlength="1000" rows="3"></textarea></label>
       </div>
       <input class="cs-honeypot" name="website" type="text" tabindex="-1" autocomplete="off" aria-hidden="true">
@@ -227,9 +231,10 @@
     </form>
   </dialog>
 
-  <script src="assets/js/runtime-config.js?v=__CACHE_BUST__"></script>
+  <script src="assets/js/runtime-config.js?v=__CACHE_BUST__"></script> <!-- TODO: Replace __CACHE_BUST__ with a dynamic value during build for caching. -->
   <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
-  <script src="assets/js/main.js?v=__CACHE_BUST__"></script>
-  <script src="assets/js/challanse.js?v=__CACHE_BUST__"></script>
+  <script src="assets/js/main.js?v=__CACHE_BUST__"></script> <!-- TODO: Replace __CACHE_BUST__ with a dynamic value during build for caching. -->
+  <script src="assets/js/challanse.js?v=__CACHE_BUST__"></script> <!-- TODO: Replace __CACHE_BUST__ with a dynamic value during build for caching. -->
+  <!-- TODO: Centralize JavaScript event listeners for the pilot dialog (cs-pilot-dialog) in a single initialization block in main.js or challanse.js. -->
 </body>
 </html>
