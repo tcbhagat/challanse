@@ -15,12 +15,10 @@
   <meta name="twitter:title" content="ChallanSe | Simple Site Receipt Capture">
   <meta name="twitter:description" content="ChallanSe helps site supervisors capture challans without forms and gives project teams a clear path from field receipt to review.">
   <link rel="icon" href="assets/ATC-logo3.png" type="image/png">
-  <!-- TODO: Optimize favicon (ATC-logo3.png) externally; ensure responsive sizes (16x16, 32x32, 192x192, 512x512) and consider WebP format. -->
   <link rel="preload" href="assets/fonts/barlow-condensed-800-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="assets/fonts/dm-sans-latin.woff2" as="font" type="font/woff2" crossorigin>
-  <!-- TODO: Consider adopting a CSS preprocessor (Sass/SCSS) or PostCSS for better maintainability and automation of vendor prefixes, minification, and cache busting. -->
-  <link rel="stylesheet" href="assets/css/style.css?v=__CACHE_BUST__"> <!-- TODO: Replace __CACHE_BUST__ with a dynamic value during build for caching. -->
-  <link rel="stylesheet" href="assets/css/challanse.css?v=__CACHE_BUST__"> <!-- TODO: Replace __CACHE_BUST__ with a dynamic value during build for caching. -->
+  <link rel="stylesheet" href="assets/css/style.css?v=__CACHE_BUST__">
+  <link rel="stylesheet" href="assets/css/challanse.css?v=__CACHE_BUST__">
   <script>document.documentElement.classList.add('cs-js');</script>
   <script type="application/ld+json">
   {
@@ -60,7 +58,7 @@
     ]
   }
   </script>
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://challenges.cloudflare.com https://challanse.constrovet.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; frame-src https://challenges.cloudflare.com; connect-src 'self' https://api.challanse.constrovet.com; base-uri 'none'; form-action 'none';"> <!-- TODO: Refactor inline styles to remove 'unsafe-inline' from style-src for stronger CSP. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://challenges.cloudflare.com https://challanse.constrovet.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; frame-src https://challenges.cloudflare.com; connect-src 'self' https://api.challanse.constrovet.com; base-uri 'none'; form-action 'none';">
 </head>
 <body class="cs-page">
   <div id="cv-nav-placeholder"></div>
@@ -72,8 +70,11 @@
           <p class="cs-eyebrow">Challan capture for active sites</p>
           <h1 id="cs-title">Capture receipts.<br>Keep the gate moving.</h1>
           <p class="cs-lead">Supervisors photograph a challan, choose the vendor, and move on. Project teams get a clear path from field receipt to review.</p>
-          <button class="cs-button" type="button" data-pilot-request>Request Pilot</button>
-          <p class="cs-quiet">No forms or typing during capture.</p>
+          <div class="cs-hero__actions">
+            <button class="cs-button" type="button" data-sample-demo>Try sample invoice</button>
+            <a class="cs-button cs-button--secondary" href="https://www.constrovet.com/pages/contact.html?interest=challanse">Process my invoice</a>
+          </div>
+          <p class="cs-quiet">The sample uses fictional data. Real invoice access requires a private workspace.</p>
         </div>
 
         <div class="cs-phone" role="img" aria-label="ChallanSe supervisor capture screen with challan camera, four vendors, and quantity controls">
@@ -101,7 +102,6 @@
       </div>
     </section>
 
-    <!-- TODO: For off-screen sections (cs-section, cs-cta), ensure any <img> tags use loading="lazy" and decoding="async". Background images should be handled in CSS/JS with lazy-loading techniques. -->
     <section class="cs-section" aria-labelledby="cs-workflow-title">
       <div class="cs-shell">
         <div class="cs-heading">
@@ -195,14 +195,13 @@
       </div>
     </section>
 
-    <!-- TODO: Consider lazy-loading the cs-cta section content if it contains images or heavy assets below the fold. -->
     <section class="cs-cta" aria-labelledby="cs-cta-title">
       <div class="cs-shell cs-cta__inner">
         <div>
-          <p class="cs-eyebrow">Start with one site</p>
-          <h2 id="cs-cta-title">See ChallanSe in your workflow.</h2>
+          <p class="cs-eyebrow">See the workflow</p>
+          <h2 id="cs-cta-title">Start with a fictional invoice.</h2>
         </div>
-        <button class="cs-button" type="button" data-pilot-request>Request Pilot</button>
+        <button class="cs-button" type="button" data-sample-demo>Try sample invoice</button>
       </div>
     </section>
   </main>
@@ -210,9 +209,40 @@
   <footer class="cs-footer">
     <div class="cs-shell cs-footer__inner">
       <span>© <span id="cs-year"></span> Constrovet</span>
-      <nav aria-label="Footer"><a href="https://www.constrovet.com/pages/privacy.html">Privacy</a><button type="button" data-pilot-request>Contact</button></nav>
+      <nav aria-label="Footer"><a href="https://www.constrovet.com/pages/privacy.html">Privacy</a><a href="https://www.constrovet.com/pages/contact.html?interest=challanse">Contact</a></nav>
     </div>
   </footer>
+
+  <dialog class="cs-sample-dialog" id="cs-sample-dialog" aria-labelledby="cs-sample-title">
+    <div class="cs-sample" data-sample-step="choose">
+      <div class="cs-dialog-header">
+        <div><p class="cs-eyebrow">Fictional data only</p><h2 id="cs-sample-title">Choose a sample invoice</h2></div>
+        <button type="button" class="cs-dialog-close" data-sample-close aria-label="Close sample invoice">×</button>
+      </div>
+      <div class="cs-sample__choices" role="group" aria-label="Sample invoices">
+        <button type="button" data-sample-id="cement"><strong>OPC Cement</strong><span>25 BAG · CH-1001</span></button>
+        <button type="button" data-sample-id="steel"><strong>TMT Steel</strong><span>250 KG · CH-1002</span></button>
+        <button type="button" data-sample-id="sand"><strong>M Sand</strong><span>12.50 TON · CH-1003</span></button>
+      </div>
+    </div>
+    <div class="cs-sample" data-sample-step="result" hidden>
+      <div class="cs-dialog-header">
+        <div><p class="cs-eyebrow">Sample result</p><h2>Ready for review</h2></div>
+        <button type="button" class="cs-dialog-close" data-sample-close aria-label="Close sample result">×</button>
+      </div>
+      <dl class="cs-sample__result">
+        <div><dt>Vendor</dt><dd data-sample-vendor></dd></div>
+        <div><dt>Challan</dt><dd data-sample-challan></dd></div>
+        <div><dt>Material</dt><dd data-sample-material></dd></div>
+        <div><dt>Quantity</dt><dd data-sample-quantity></dd></div>
+      </dl>
+      <p class="cs-sample__notice">This demonstration stays in your browser and stores nothing.</p>
+      <div class="cs-sample__actions">
+        <button type="button" class="cs-button cs-button--secondary-light" data-sample-reset>Try another</button>
+        <a class="cs-button" href="https://www.constrovet.com/pages/contact.html?interest=challanse">Process my invoice</a>
+      </div>
+    </div>
+  </dialog>
 
   <dialog class="cs-pilot-dialog" id="cs-pilot-dialog" aria-labelledby="cs-pilot-title">
     <form class="cs-pilot-form" id="cs-pilot-form">
@@ -231,10 +261,9 @@
     </form>
   </dialog>
 
-  <script src="assets/js/runtime-config.js?v=__CACHE_BUST__"></script> <!-- TODO: Replace __CACHE_BUST__ with a dynamic value during build for caching. -->
+  <script src="assets/js/runtime-config.js?v=__CACHE_BUST__"></script>
   <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
-  <script src="assets/js/main.js?v=__CACHE_BUST__"></script> <!-- TODO: Replace __CACHE_BUST__ with a dynamic value during build for caching. -->
-  <script src="assets/js/challanse.js?v=__CACHE_BUST__"></script> <!-- TODO: Replace __CACHE_BUST__ with a dynamic value during build for caching. -->
-  <!-- TODO: Centralize JavaScript event listeners for the pilot dialog (cs-pilot-dialog) in a single initialization block in main.js or challanse.js. -->
+  <script src="assets/js/main.js?v=__CACHE_BUST__"></script>
+  <script src="assets/js/challanse.js?v=__CACHE_BUST__"></script>
 </body>
 </html>

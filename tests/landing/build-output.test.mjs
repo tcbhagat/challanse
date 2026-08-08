@@ -33,3 +33,12 @@ test('landing tabs remain discoverable while inactive panels remain hidden', asy
   assert.doesNotMatch(page, /role="tab"[^>]*aria-hidden=/);
   assert.match(page, /role="tabpanel"[^>]*aria-hidden="true"[^>]*hidden/);
 });
+
+test('landing exposes a browser-only sample journey and a private real-invoice route', async () => {
+  const page = await readFile('dist/landing/index.html', 'utf8');
+  assert.match(page, /data-sample-demo>Try sample invoice/);
+  assert.match(page, /Fictional data only/);
+  assert.match(page, /This demonstration stays in your browser and stores nothing/);
+  assert.match(page, /href="https:\/\/www\.constrovet\.com\/pages\/contact\.html\?interest=challanse">Process my invoice<\/a>/);
+  assert.doesNotMatch(page, /type="file"/);
+});

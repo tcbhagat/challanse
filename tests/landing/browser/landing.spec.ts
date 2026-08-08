@@ -77,6 +77,26 @@ test('workflow tabs work by click and keyboard with one visible panel', async ({
   await expect(tabs.nth(0)).not.toHaveAttribute('aria-hidden', 'true');
 });
 
+test('anonymous visitor completes the fictional invoice demonstration', async ({ page }) => {
+  await page.getByRole('button', { name: 'Try sample invoice' }).first().click();
+  await expect(page.getByRole('heading', { name: 'Choose a sample invoice' })).toBeVisible();
+  await page.getByRole('button', { name: /OPC Cement/ }).click();
+  await expect(page.getByRole('heading', { name: 'Ready for review' })).toBeVisible();
+  await expect(page.locator('[data-sample-vendor]')).toHaveText('Synthetic Cement Co');
+  await expect(page.locator('[data-sample-challan]')).toHaveText('CH-1001');
+  await expect(page.locator('[data-sample-material]')).toHaveText('OPC Cement');
+  await expect(page.locator('[data-sample-quantity]')).toHaveText('25 BAG');
+  await expect(page.getByText(/stores nothing/)).toBeVisible();
+});
+
+test('real invoice action uses the private-access contact route', async ({ page }) => {
+  const control = page.getByRole('link', { name: 'Process my invoice' }).first();
+  await expect(control).toHaveAttribute('href', contactUrl);
+  await control.click();
+  await expect(page).toHaveURL(contactUrl);
+  await expect(page.locator('#interest')).toHaveValue('ChallanSe pilot');
+});
+
 test('landing has no serious accessibility violations', async ({ page }) => {
   const results = await new AxeBuilder({ page }).analyze();
   expect(results.violations.filter(violation => ['serious', 'critical'].includes(violation.impact || ''))).toEqual([]);
