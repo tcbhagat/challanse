@@ -12,6 +12,8 @@
     "check:js": "node --check assets/js/main.js && node --check assets/js/challanse.js",
     "test": "npm run test --workspaces --if-present",
     "test:browser": "playwright test",
+    "test:landing": "node --test tests/landing/build-output.test.mjs",
+    "test:landing:browser": "playwright test --config playwright.landing.config.ts",
     "test:enrichment": "PYTHONPATH=services/enrichment python3 -m pytest -q services/enrichment/tests",
     "build": "npm run build:landing && npm run build --workspace @challanse/contracts --if-present && npm run build --workspace @challanse/edge && npm run build --workspace @challanse/reviewer",
     "build:landing": "node scripts/build-landing.mjs",
@@ -27,7 +29,11 @@
     "db:seed": "node scripts/seed-d1.mjs"
   },
   "overrides": {
-    "brace-expansion": "5.0.9"
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "10.2.6"
+    },
+    "brace-expansion": "5.0.9",
+    "undici": "7.29.0"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.12.1",

@@ -1,6 +1,7 @@
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { replacePilotControls } from './landing-build-utils.mjs';
 
 const root = process.cwd();
 const output = path.join(root, 'dist', 'landing');
@@ -45,20 +46,7 @@ await writeFile(runtimePath, runtime);
 const htmlPath = path.join(output, 'index.html');
 let html = (await readFile(htmlPath, 'utf8')).replace(/__CACHE_BUST__/g, cacheBust);
 if (!pilotRequestsEnabled) {
-  const escapedContactUrl = contactUrl
-    .replaceAll('&', '&amp;')
-    .replaceAll('"', '&quot;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;');
-  html = html
-    .replace(
-      /<button class="cs-button" type="button" data-pilot-request>Request Pilot<\/button>/g,
-      `<a class="cs-button" href="${escapedContactUrl}">Request Pilot</a>`
-    )
-    .replace(
-      /<button type="button" data-pilot-request>Contact<\/button>/g,
-      `<a href="${escapedContactUrl}">Contact</a>`
-    )
+  html = replacePilotControls(html, contactUrl)
     .replace(/\n\s*<dialog class="cs-pilot-dialog"[\s\S]*?<\/dialog>\n/, '\n')
     .replace(
       /\n\s*<script src="https:\/\/challenges\.cloudflare\.com\/turnstile\/v0\/api\.js\?render=explicit" async defer><\/script>/,
@@ -66,6 +54,12 @@ if (!pilotRequestsEnabled) {
     );
 }
 await writeFile(htmlPath, html);
+
+if (!pilotRequestsEnabled) {
+  const navigationPath = path.join(output, 'assets', 'nav.html');
+  const navigation = replacePilotControls(await readFile(navigationPath, 'utf8'), contactUrl);
+  await writeFile(navigationPath, navigation);
+}
 
 if (process.env.CHALLANSE_CUSTOM_DOMAIN) {
   await writeFile(path.join(output, 'CNAME'), `${process.env.CHALLANSE_CUSTOM_DOMAIN}\n`);

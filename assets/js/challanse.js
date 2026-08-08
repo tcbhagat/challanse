@@ -22,8 +22,11 @@
     pilotDialog.querySelector("input")?.focus();
   }
 
-  document.querySelectorAll("[data-pilot-request]").forEach((button) => {
-    button.addEventListener("click", openPilotDialog);
+  document.addEventListener("click", (event) => {
+    const control = event.target.closest?.("[data-pilot-request]");
+    if (!control) return;
+    event.preventDefault();
+    openPilotDialog();
   });
 
   pilotDialog?.querySelector(".cs-dialog-close")?.addEventListener("click", () => pilotDialog.close());
@@ -94,6 +97,8 @@
       tab.setAttribute("aria-selected", String(selected));
       tab.tabIndex = selected ? 0 : -1;
       panels[index].hidden = !selected;
+      panels[index].tabIndex = selected ? 0 : -1;
+      panels[index].setAttribute("aria-hidden", String(!selected));
     });
 
     if (moveFocus) {
