@@ -17,6 +17,7 @@ export interface Env {
   // Queues
   RECEIPT_QUEUE: Queue;
   AUDIT_QUEUE: Queue;
+  AI?: { run(model: string, inputs: Record<string, unknown>): Promise<unknown> };
 
   // Environment variables
   ALLOWED_ORIGINS: string;
@@ -25,6 +26,8 @@ export interface Env {
   ENVIRONMENT: string;
   TURNSTILE_SITE_KEY: string;
   PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER: string;
+  AI_MODEL: string;
+  AI_DAILY_REQUEST_LIMIT: string;
   GROK_API_BASE_URL: string;
   AGENTMEMORY_URL: string;
 

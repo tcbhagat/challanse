@@ -16,10 +16,11 @@ import {
 } from '../graph';
 import { drainReceiptEnrichment } from '../enrichment-drain';
 import { isValidReceiptId } from '../receipt-id';
+import { MAX_WEB_IMAGE_BYTES, validateImage } from '../image-validation';
 import type { Env } from '../types';
 
 const UPLOAD_PART_SIZE = 256_000;
-const MAX_IMAGE_BYTES = 10_000_000; // 10MB max image
+const MAX_IMAGE_BYTES = MAX_WEB_IMAGE_BYTES;
 
 type ReceiptGraphDevice = {
   id: string;
@@ -118,6 +119,9 @@ export async function handleCreateUpload(request: Request, env: Env): Promise<Re
 
   if (body.totalBytes > MAX_IMAGE_BYTES) {
     return error(request, env, 413, 'IMAGE_TOO_LARGE', `Image must be under ${MAX_IMAGE_BYTES} bytes.`);
+  }
+  if ((body.mimeType ?? 'image/webp') !== 'image/webp') {
+    return error(request, env, 400, 'IMAGE_TYPE_UNSUPPORTED', 'Mobile uploads must use WebP.');
   }
 
   // Verify site limits
@@ -385,6 +389,12 @@ export async function handleCompleteUpload(request: Request, env: Env, uploadId:
   const actualSha256 = await sha256Hex(combined.buffer);
   if (actualSha256 !== session.declared_sha256) {
     return error(request, env, 400, 'IMAGE_HASH_MISMATCH', 'Final image SHA-256 does not match declared hash.');
+  }
+
+  try {
+    validateImage(combined, session.mime_type);
+  } catch (validationError) {
+    return error(request, env, 400, validationError instanceof Error ? validationError.message : 'IMAGE_DECODE_INVALID', 'The uploaded image is invalid.');
   }
 
   // Store the assembled image in R2 under the permanent receipt key

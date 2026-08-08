@@ -10,6 +10,7 @@ import { appendAuditEvent, receiptReviewedEvent, tallyImportedEvent, invoiceCrea
 import { parseTallyCsv, calculateReconciliationDeltas, normalizeUnit } from '../tally';
 import { upsertGraphEdge, upsertGraphNode, ensurePurchaseOrderInGraph, graphAwareReconciliation, reconcileReceiptsWithPOs } from '../graph';
 import type { AccessIdentity, Env } from '../types';
+import { MAX_WEB_IMAGE_BYTES, validateImage } from '../image-validation';
 import type { PurchaseOrderRow } from '../tally';
 
 // ─── GET /v1/reviewer/context ────────────────────────────────────────────────
@@ -254,7 +255,7 @@ export async function handleCreateInvoice(request: Request, env: Env, identity: 
   let reviewer;
   try {
     reviewer = await authenticateReviewer(db, identity.issuer, identity.subject, identity.email);
-    requireRole(reviewer, ['ORG_ADMIN', 'SITE_ADMIN', 'CONTROLLER', 'AUDITOR']);
+    requireRole(reviewer, ['ORG_ADMIN', 'SITE_ADMIN', 'CONTROLLER', 'REVIEWER']);
   } catch (err) {
     if (err instanceof ReviewerAuthError) {
       return error(request, env, err.statusCode, err.code, err.message);
@@ -319,7 +320,7 @@ export async function handleInvoiceImage(request: Request, env: Env, identity: A
   let reviewer;
   try {
     reviewer = await authenticateReviewer(db, identity.issuer, identity.subject, identity.email);
-    requireRole(reviewer, ['ORG_ADMIN', 'SITE_ADMIN', 'CONTROLLER', 'AUDITOR']);
+    requireRole(reviewer, ['ORG_ADMIN', 'SITE_ADMIN', 'CONTROLLER', 'REVIEWER']);
   } catch (err) {
     if (err instanceof ReviewerAuthError) {
       return error(request, env, err.statusCode, err.code, err.message);
@@ -329,19 +330,32 @@ export async function handleInvoiceImage(request: Request, env: Env, identity: A
 
   const contentType = request.headers.get('Content-Type') || '';
   const contentLength = parseInt(request.headers.get('Content-Length') || '0', 10);
-  if (contentLength > 10_000_000) {
-    return error(request, env, 413, 'IMAGE_TOO_LARGE', 'Image must be under 10 MB.');
+  if (contentLength > MAX_WEB_IMAGE_BYTES) {
+    return error(request, env, 413, 'IMAGE_TOO_LARGE', 'Image must be under 5 MB.');
   }
 
   const body = await request.arrayBuffer();
+  let image;
+  try {
+    image = validateImage(new Uint8Array(body), contentType);
+  } catch (validationError) {
+    return error(request, env, 400, validationError instanceof Error ? validationError.message : 'IMAGE_DECODE_INVALID', 'Use a valid JPEG, PNG or WebP image under 5 MB.');
+  }
   const imageSha256 = await sha256Hex(body);
+  const vendorId = (request.headers.get('X-ChallanSe-Vendor-Id') || '').trim();
+  const quantity = Number(request.headers.get('X-ChallanSe-Quantity') || '0');
+  const unit = (request.headers.get('X-ChallanSe-Unit') || '').trim().toUpperCase();
+  const vendor = await first<{ id: string }>(db, 'SELECT id FROM vendors WHERE id = ? AND site_id = ? AND active = 1', vendorId, reviewer.siteId);
+  if (!vendor || !Number.isFinite(quantity) || quantity <= 0 || quantity > 1_000_000_000 || !['BAG', 'KG', 'TON', 'NOS', 'UNIT', 'M3', 'L'].includes(unit)) {
+    return error(request, env, 400, 'INVALID_INVOICE_METADATA', 'Select a valid vendor, quantity and unit.');
+  }
 
   const receiptId = uuid();
-  const imageKey = `invoices/${reviewer.organizationId}/${reviewer.siteId}/${receiptId}.webp`;
+  const imageKey = `invoices/${reviewer.organizationId}/${reviewer.siteId}/${receiptId}.${image.extension}`;
 
   // Store image in R2
   await env.RECEIPTS.put(imageKey, body, {
-    httpMetadata: { contentType },
+    httpMetadata: { contentType: image.mimeType },
   });
 
   // Create invoice receipt record
@@ -349,10 +363,10 @@ export async function handleInvoiceImage(request: Request, env: Env, identity: A
   await exec(
     db,
     `INSERT INTO receipts (id, site_id, device_id, vendor_id, captured_at_unix, captured_quantity, image_key, image_bytes, image_sha256, status, version, enrichment_status, mime_type, created_at, updated_at)
-     VALUES (?, ?, '', '', ?, 0, ?, ?, ?, 'NEEDS_REVIEW', 1, 'IMAGE_STORED', ?, ?, ?)`,
+     VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, 'RECEIVED', 1, 'IMAGE_STORED', ?, ?, ?)`,
     receiptId, reviewer.siteId,
-    Math.floor(Date.now() / 1000), imageKey, body.byteLength,
-    imageSha256, contentType,
+    vendorId, Math.floor(Date.now() / 1000), quantity, imageKey, body.byteLength,
+    imageSha256, image.mimeType,
     now, now,
   );
 
@@ -360,11 +374,16 @@ export async function handleInvoiceImage(request: Request, env: Env, identity: A
   const chainId = `org:${reviewer.organizationId}:site:${reviewer.siteId}`;
   await appendAuditEvent(db, chainId, 'INVOICE_CREATED', invoiceCreatedEvent(receiptId, reviewer.email, reviewer.siteId, reviewer.organizationId));
 
+  await env.RECEIPT_QUEUE.send({
+    type: 'receipt_enrichment', receiptId, organizationId: reviewer.organizationId,
+    siteId: reviewer.siteId, imageKey, imageBytes: body.byteLength,
+  });
+
   return json(request, env, {
     receiptId,
     imageBytes: body.byteLength,
     imageSha256,
-    status: 'NEEDS_REVIEW',
+    status: 'PROCESSING',
   }, 202);
 }
 

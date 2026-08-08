@@ -45,10 +45,15 @@ queue = "receipt-enrichment"
 binding = "AUDIT_QUEUE"
 queue = "audit-events"
 
-# No [[queues.consumers]] binding here: production receipt enrichment runs on
-# the AWS SQS pipeline in services/enrichment. The Worker's queue handler is a
-# no-op outside the local-pilot runtime, which drains inline in
-# handleCompleteUpload (wrangler dev --local does not guarantee queue delivery).
+[[queues.consumers]]
+queue = "receipt-enrichment"
+max_batch_size = 5
+max_batch_timeout = 10
+max_retries = 3
+dead_letter_queue = "receipt-enrichment-dlq"
+
+[ai]
+binding = "AI"
 
 # ─── Environment Variables ──────────────────────────────────────────────────
 [vars]
@@ -59,6 +64,8 @@ ENRICHMENT_URL = ""
 ENVIRONMENT = "production"
 TURNSTILE_SITE_KEY = ""
 PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER = "0"
+AI_MODEL = "@cf/moondream/moondream3.1-9B-A2B"
+AI_DAILY_REQUEST_LIMIT = "25"
 # External-provider integrations (xAI/Grok, agentmemory) are intentionally
 # disabled: these vars must remain empty in both CI and production renders.
 GROK_API_BASE_URL = ""

@@ -34,12 +34,10 @@ import { handleGraphExport, handleGraphSubgraph, handleOrganizationGraph, handle
 // Audit admin endpoints (Phase 3: Merkle DAG)
 import { handleChainStatus, handleChainVerifyDag, handleAlertsList, handleAlertAcknowledge, handleChainSyncGraph } from './handlers/audit-admin';
 
-// Event/ingest endpoints
-import { handleReceiptEvent, handleReviewEvent, handleTelemetryEvent } from './handlers/events';
-
 // Local pilot bridge endpoints (ENVIRONMENT=local-pilot only)
 import { handleLocalStatus, handleLocalEnrollmentCodes } from './handlers/local';
 import { drainReceiptEnrichment } from './enrichment-drain';
+import { isReceiptMessage, processReceiptWithWorkersAi } from './receipt-enrichment';
 
 // ─── Route Table ──────────────────────────────────────────────────────────────
 
@@ -110,10 +108,7 @@ const routes: RouteDef[] = [
   { method: 'GET',    pattern: '/v1/admin/graph/neighbors/:nodeId',   handler: handleGraphNeighbors,        auth: 'access' },
   { method: 'GET',    pattern: '/v1/reviewer/graph/subgraph',         handler: handleGraphSubgraph,         auth: 'access' },
 
-  // ── Event/ingest routes (auth to be added in Phase 7) ───────────────
-  { method: 'POST',   pattern: '/v1/events/receipts',  handler: handleReceiptEvent,  auth: 'none' },
-  { method: 'POST',   pattern: '/v1/events/reviews',   handler: handleReviewEvent,   auth: 'none' },
-  { method: 'POST',   pattern: '/v1/events/telemetry', handler: handleTelemetryEvent,auth: 'none' },
+  // ── Event/ingest routes are local-only until signed service auth exists ──
 
   // ── Local pilot bridge routes (ENVIRONMENT=local-pilot only) ────────
   { method: 'GET',    pattern: '/v1/local/status',           handler: handleLocalStatus,          auth: 'none' },
@@ -280,20 +275,18 @@ export default {
   // for local-pilot because `wrangler dev --local` does not guarantee queue
   // delivery.
   async queue(batch: MessageBatch, env: Env): Promise<void> {
-    if (env.ENVIRONMENT !== 'local-pilot') return;
     for (const message of batch.messages) {
-      const body = message.body as {
-        type?: string;
-        receiptId?: string;
-        organizationId?: string;
-        siteId?: string;
-      } | null;
-      if (!body || body.type !== 'receipt_enrichment' || !body.receiptId) continue;
-      await drainReceiptEnrichment(env.DB, {
-        receiptId: body.receiptId,
-        organizationId: body.organizationId,
-        siteId: body.siteId,
-      });
+      if (!isReceiptMessage(message.body)) { message.ack(); continue; }
+      try {
+        if (env.ENVIRONMENT === 'local-pilot') {
+          await drainReceiptEnrichment(env.DB, message.body);
+        } else {
+          await processReceiptWithWorkersAi(env, message.body);
+        }
+        message.ack();
+      } catch {
+        message.retry();
+      }
     }
   },
 } satisfies ExportedHandler<Env>;
