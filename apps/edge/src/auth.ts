@@ -217,12 +217,9 @@ export async function verifyPlayIntegrity(
   if (env.ENVIRONMENT === 'local-pilot' || env.ENVIRONMENT === 'development') {
     return 'pass';
   }
-  if (!token || !env.PLAY_INTEGRITY_CREDENTIALS_JSON || !env.PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER) {
-    return 'fail';
-  }
-  // TODO: Phase 6 - Full Play Integrity verification using Google API
-  // This requires Google API client from @googleapis/androidpublisher
-  // For now, we accept the token and log it
-  console.log('Play Integrity token received (verification pending Phase 6):', token.slice(0, 20));
-  return 'pass';
+  // Production enrollment stays fail-closed until server-side Play Integrity
+  // decoding and request-hash verification are implemented and evidenced.
+  void token;
+  void expectedRequestHash;
+  return 'fail';
 }

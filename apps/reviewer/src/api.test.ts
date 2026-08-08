@@ -96,27 +96,35 @@ describe('reviewer API request protection', () => {
 
   it('uploads an invoice image with reviewer scope and essential metadata', async () => {
     vi.stubGlobal('document', { cookie: 'challanse_local_csrf=image-csrf-token' });
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 202,
-      json: async () => ({ receiptId: 'receipt-3', status: 'RECEIVED' }),
-    });
-    vi.stubGlobal('fetch', fetchMock);
+    const headers = new Map<string, string>();
+    const progress = vi.fn();
+    class MockXhr {
+      status = 202;
+      responseText = JSON.stringify({ receiptId: 'receipt-3', status: 'PROCESSING' });
+      withCredentials = false;
+      upload: { onprogress?: (event: { lengthComputable: boolean; loaded: number; total: number }) => void } = {};
+      onload?: () => void;
+      open = vi.fn();
+      setRequestHeader(name: string, value: string) { headers.set(name, value); }
+      send(fileBody: File) {
+        expect(fileBody).toBe(file);
+        this.upload.onprogress?.({ lengthComputable: true, loaded: 5, total: 10 });
+        this.onload?.();
+      }
+    }
+    vi.stubGlobal('XMLHttpRequest', MockXhr);
     const file = new File(['image-bytes'], 'invoice.webp', { type: 'image/webp' });
 
-    await uploadInvoiceImage(file, 'vendor-1', 25, 'BAG');
+    await uploadInvoiceImage(file, 'vendor-1', 25, 'BAG', progress);
 
-    expect(fetchMock).toHaveBeenCalledWith('/api/v1/reviewer/invoice-images', expect.objectContaining({
-      method: 'POST',
-      credentials: 'include',
-      body: file,
-      headers: expect.objectContaining({
-        'Content-Type': 'image/webp',
-        'X-ChallanSe-Vendor-Id': 'vendor-1',
-        'X-ChallanSe-Quantity': '25',
-        'X-ChallanSe-Unit': 'BAG',
-        'X-CSRF-Token': 'image-csrf-token',
-      }),
-    }));
+    expect(Object.fromEntries(headers)).toMatchObject({
+      'Content-Type': 'image/webp',
+      'X-ChallanSe-Vendor-Id': 'vendor-1',
+      'X-ChallanSe-Quantity': '25',
+      'X-ChallanSe-Unit': 'BAG',
+      'X-CSRF-Token': 'image-csrf-token',
+    });
+    expect(progress).toHaveBeenCalledWith(50);
+    expect(progress).toHaveBeenLastCalledWith(100);
   });
 });

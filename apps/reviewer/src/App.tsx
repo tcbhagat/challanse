@@ -259,15 +259,17 @@ function InvoiceImageUpload({
   const [unit, setUnit] = useState('UNIT');
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState(0);
   const [message, setMessage] = useState('');
   const valid = Boolean(file && vendorId && Number(quantity) > 0 && unit);
 
   const submit = async () => {
     if (!file) return;
     setBusy(true);
+    setProgress(0);
     setMessage('');
     try {
-      await uploadInvoiceImage(file, vendorId, Number(quantity), unit);
+      await uploadInvoiceImage(file, vendorId, Number(quantity), unit, setProgress);
       await onCreated();
     } catch (caught) {
       setMessage(caught instanceof Error ? caught.message : 'Invoice image could not be uploaded.');
@@ -288,7 +290,17 @@ function InvoiceImageUpload({
             required
             type="file"
             accept="image/jpeg,image/png,image/webp"
-            onChange={(event) => setFile(event.target.files?.[0] || null)}
+            onChange={(event) => {
+              const selected = event.target.files?.[0] || null;
+              if (selected && selected.size > 5_000_000) {
+                setFile(null);
+                setMessage('Choose an image under 5 MB.');
+                event.target.value = '';
+              } else {
+                setMessage('');
+                setFile(selected);
+              }
+            }}
             disabled={busy}
           />
           <span>{file ? file.name : 'Choose JPG, PNG or WebP'}</span>
@@ -307,6 +319,7 @@ function InvoiceImageUpload({
             {commonUnits.map((option) => <option key={option} value={option}>{option}</option>)}
           </select>
         </label>
+        {busy ? <p className="form-message wide" role="status">Uploading {progress}%</p> : null}
         {message ? <p className="form-message wide" role="alert">{message}</p> : null}
         <div className="manual-invoice-actions wide">
           <button type="button" className="button secondary" onClick={onBack} disabled={busy}>Back</button>

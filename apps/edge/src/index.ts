@@ -34,8 +34,10 @@ import { handleGraphExport, handleGraphSubgraph, handleOrganizationGraph, handle
 // Audit admin endpoints (Phase 3: Merkle DAG)
 import { handleChainStatus, handleChainVerifyDag, handleAlertsList, handleAlertAcknowledge, handleChainSyncGraph } from './handlers/audit-admin';
 
-// Event/ingest endpoints
-import { handleReceiptEvent, handleReviewEvent, handleTelemetryEvent } from './handlers/events';
+// Local pilot bridge endpoints (ENVIRONMENT=local-pilot only)
+import { handleLocalStatus, handleLocalEnrollmentCodes } from './handlers/local';
+import { drainReceiptEnrichment } from './enrichment-drain';
+import { isReceiptMessage, processReceiptWithWorkersAi } from './receipt-enrichment';
 
 // ─── Route Table ──────────────────────────────────────────────────────────────
 
@@ -106,10 +108,11 @@ const routes: RouteDef[] = [
   { method: 'GET',    pattern: '/v1/admin/graph/neighbors/:nodeId',   handler: handleGraphNeighbors,        auth: 'access' },
   { method: 'GET',    pattern: '/v1/reviewer/graph/subgraph',         handler: handleGraphSubgraph,         auth: 'access' },
 
-  // ── Event/ingest routes (auth to be added in Phase 7) ───────────────
-  { method: 'POST',   pattern: '/v1/events/receipts',  handler: handleReceiptEvent,  auth: 'none' },
-  { method: 'POST',   pattern: '/v1/events/reviews',   handler: handleReviewEvent,   auth: 'none' },
-  { method: 'POST',   pattern: '/v1/events/telemetry', handler: handleTelemetryEvent,auth: 'none' },
+  // ── Event/ingest routes are local-only until signed service auth exists ──
+
+  // ── Local pilot bridge routes (ENVIRONMENT=local-pilot only) ────────
+  { method: 'GET',    pattern: '/v1/local/status',           handler: handleLocalStatus,          auth: 'none' },
+  { method: 'POST',   pattern: '/v1/local/enrollment-codes', handler: handleLocalEnrollmentCodes, auth: 'none' },
 ];
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -261,6 +264,25 @@ export default {
           ? 'The data service could not complete the request.'
           : 'An internal error occurred processing the request.',
       );
+    }
+  },
+  // ── Queue consumer: receipt-enrichment ──────────────────────────────
+  // Production uses Cloudflare Queues and Workers AI. Local pilot mode keeps
+  // its deterministic synthetic drain because `wrangler dev --local` does not
+  // guarantee queue delivery. Every production outcome remains reviewer-led.
+  async queue(batch: MessageBatch, env: Env): Promise<void> {
+    for (const message of batch.messages) {
+      if (!isReceiptMessage(message.body)) { message.ack(); continue; }
+      try {
+        if (env.ENVIRONMENT === 'local-pilot') {
+          await drainReceiptEnrichment(env.DB, message.body);
+        } else {
+          await processReceiptWithWorkersAi(env, message.body);
+        }
+        message.ack();
+      } catch {
+        message.retry();
+      }
     }
   },
 } satisfies ExportedHandler<Env>;

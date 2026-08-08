@@ -6,7 +6,7 @@
 import { error, json } from '../responses';
 import { authenticateReviewer, requireRole, ReviewerAuthError } from '../auth';
 import { uuid, exec, first, all, getSitesByOrg, getOrganization } from '../db';
-import { randomEnrollmentCode } from '../security';
+import { randomEnrollmentCode, sha256Hex } from '../security';
 import { appendAuditEvent, verifyChain, verifyAllChains } from '../audit-chain';
 import { reviewerInvitedEvent, configChangedEvent, quotaChangedEvent, siteChangedEvent, vendorChangedEvent, membershipChangedEvent } from '../audit-chain';
 import { upsertGraphNode, ensureSiteInGraph, ensureVendorInGraph, ensureReviewerInGraph, deleteGraphNode } from '../graph';
@@ -115,13 +115,16 @@ export async function handleCreateEnrollmentCode(request: Request, env: Env, ide
 
   const siteId = String(body.siteId || reviewer.siteId);
   const code = randomEnrollmentCode();
+  // code_hash is the enrollment_codes primary key; store the plaintext in `code`
+  // because handleEnroll looks the code up by plaintext (ec.code = ?).
+  const codeHash = await sha256Hex(code);
   const now = new Date().toISOString();
 
   await exec(
     db,
-    `INSERT INTO enrollment_codes (id, code, site_id, organization_id, device_name, expires_at, created_by, active, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
-    uuid(), code, siteId, reviewer.organizationId,
+    `INSERT INTO enrollment_codes (id, code, code_hash, site_id, organization_id, device_name, expires_at, created_by, active, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+    uuid(), code, codeHash, siteId, reviewer.organizationId,
     String(body.deviceName || 'Unnamed Device'),
     String(body.expiresAt || new Date(Date.now() + 7 * 86_400_000).toISOString()),
     reviewer.email, now,

@@ -26,6 +26,12 @@ CONTAINER_SIZE_BYTES="21474836480"
 MAPPER_NAME="challanse-local"
 CLIENT_READINESS_DIR="$DATA_ROOT/exports/client-readiness"
 
+# Edge/D1 pilot tenant UUIDs (must match scripts/seed-d1-pilot.sql)
+PILOT_ORG_ID="10000000-0000-4000-8000-000000000001"
+PILOT_SITE_ID="20000000-0000-4000-8000-000000000001"
+ACCEPTANCE_ORG_ID="10000000-0000-4000-8000-000000000002"
+ACCEPTANCE_SITE_ID="20000000-0000-4000-8000-000000000002"
+
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"; }
 confirm_phrase() {
@@ -96,6 +102,7 @@ load_env() {
   mkdir -p "$RUNTIME_ROOT/tls"
   chmod 700 "$RUNTIME_ROOT"
   chmod 755 "$RUNTIME_ROOT/tls"
+  ensure_edge_vars
   cp "$EDGE_VARS" "$RUNTIME_ROOT/edge.dev.vars"
   cp "$REVIEWER_VARS" "$RUNTIME_ROOT/reviewer.dev.vars"
   cp "$TLS_DIR"/*.crt "$TLS_DIR"/*.key "$RUNTIME_ROOT/tls/"
@@ -379,6 +386,7 @@ ACCESS_TEAM_DOMAIN=
 ACCESS_AUD=
 TURNSTILE_SECRET=
 ENVIRONMENT=local-pilot
+DEVICE_TOKEN_PEPPER=$pepper
 ENRICHMENT_URL=http://api:8080
 EDGE_TO_ENRICHMENT_HMAC_KEY_ID=local-current
 EDGE_TO_ENRICHMENT_HMAC_KEY=$hmac_key
@@ -407,6 +415,21 @@ ensure_local_test_config() {
     printf 'LOCAL_BUILD_COMMIT_SHA=%s\n' "$(git rev-parse HEAD)" >>"$ENV_FILE"
   fi
   chmod 600 "$ENV_FILE"
+}
+ensure_edge_vars() {
+  # Pre-2026 provisions wrote edge.dev.vars without DEVICE_TOKEN_PEPPER. Without
+  # it the edge enrolls devices with an empty pepper but rejects every token at
+  # /v1/mobile/bootstrap (DEVICE_UNAUTHORIZED). Heal in place from local.env —
+  # the same pepper the API already holds — without rotating any secrets.
+  [[ -f "$EDGE_VARS" && -f "$ENV_FILE" ]] || return
+  if ! grep -q '^DEVICE_TOKEN_PEPPER=' "$EDGE_VARS"; then
+    local pepper
+    pepper="$(sed -n 's/^DEVICE_TOKEN_PEPPER=//p' "$ENV_FILE" | head -n 1)"
+    if [[ -n "$pepper" ]]; then
+      printf 'DEVICE_TOKEN_PEPPER=%s\n' "$pepper" >>"$EDGE_VARS"
+      chmod 600 "$EDGE_VARS"
+    fi
+  fi
 }
 record_local_runtime_manifest() {
   local apk="$ROOT/apps/mobile/android/app/build/outputs/apk/localPilot/app-localPilot.apk"
@@ -650,6 +673,7 @@ provision() {
   if [[ -e "$ENV_FILE" ]]; then
     ensure_local_auth_key
     ensure_local_test_config
+    ensure_edge_vars
     validate_existing_provision_state "$lan_ip"
     printf 'Validated existing local secrets and pilot CA; resuming provisioning without rotation.\n'
   else
@@ -805,6 +829,18 @@ test_data() {
   printf 'Synthetic test data refreshed:\n  Images: %s/*.webp\n  Tally CSV: %s/synthetic-tally.csv\n' \
     "$DATA_ROOT/fixtures" "$DATA_ROOT/fixtures"
 }
+bridge_enrollment_code() {
+  # Creates an enrollment code in the edge D1 database for the given tenant so the
+  # edge (not the Postgres API) is the enrollment/upload authority. LAN-only; gated
+  # by the local reviewer gateway secret in the edge environment.
+  need curl
+  local code="$1" site_id="$2" organization_id="$3" device_name="$4"
+  curl -fsS --max-time 30 --cacert "$TLS_DIR/pilot-ca.crt" \
+    -H "X-ChallanSe-Local-Reviewer-Secret: $LOCAL_REVIEWER_GATEWAY_SECRET" \
+    -H 'Content-Type: application/json' \
+    -d "{\"code\":\"$code\",\"siteId\":\"$site_id\",\"organizationId\":\"$organization_id\",\"deviceName\":\"$device_name\"}" \
+    "https://$CHALLANSE_LAN_IP:8443/v1/local/enrollment-codes" >/dev/null
+}
 enroll() {
   require_encrypted_storage
   load_env
@@ -829,6 +865,7 @@ enroll() {
   output="$(compose exec -T -e LOCAL_DEVICE_NAME="$device_name" api python -m app.local_enroll)"
   code="$(sed -n 's/^enrollment_code=\([^ ]*\).*/\1/p' <<<"$output")"
   [[ -n "$code" ]] || die "Enrollment code could not be generated."
+  bridge_enrollment_code "$code" "$PILOT_SITE_ID" "$PILOT_ORG_ID" "$device_name"
   api_base="https://$CHALLANSE_LAN_IP:8443"
   link="$scheme://enroll?api=$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$api_base")&code=$code"
   printf 'Enrollment expires in 10 minutes. Open this link on the pilot device:\n%s\n' "$link"
@@ -1149,6 +1186,7 @@ acceptance() {
   output="$(compose exec -T api python -m app.local_acceptance prepare)"
   code="$(sed -n 's/^enrollment_code=\([^ ]*\).*/\1/p' <<<"$output")"
   [[ -n "$code" ]] || die "Acceptance enrollment code could not be generated."
+  bridge_enrollment_code "$code" "$ACCEPTANCE_SITE_ID" "$ACCEPTANCE_ORG_ID" "Acceptance Device"
   report="$DATA_ROOT/exports/local-acceptance-$(date -u +%Y%m%dT%H%M%SZ).json"
   set +e
   LOCAL_API_BASE_URL="https://$CHALLANSE_LAN_IP:8443" \

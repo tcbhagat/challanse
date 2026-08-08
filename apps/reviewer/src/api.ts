@@ -122,16 +122,33 @@ export function createManualInvoice(invoice: ManualInvoiceInput) {
   });
 }
 
-export function uploadInvoiceImage(file: File, vendorId: string, quantity: number, unit: string) {
-  return api<{ receiptId: string; status: string }>('/v1/reviewer/invoice-images', {
-    method: 'POST',
-    headers: {
-      'Content-Type': file.type,
-      'X-ChallanSe-Vendor-Id': vendorId,
-      'X-ChallanSe-Quantity': String(quantity),
-      'X-ChallanSe-Unit': unit,
-    },
-    body: file,
+export function uploadInvoiceImage(file: File, vendorId: string, quantity: number, unit: string, onProgress?: (percent: number) => void) {
+  return new Promise<{ receiptId: string; status: string }>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open('POST', `${API_BASE_URL}/v1/reviewer/invoice-images`);
+    request.withCredentials = true;
+    request.setRequestHeader('Content-Type', file.type);
+    request.setRequestHeader('X-ChallanSe-Vendor-Id', vendorId);
+    request.setRequestHeader('X-ChallanSe-Quantity', String(quantity));
+    request.setRequestHeader('X-ChallanSe-Unit', unit);
+    const csrf = csrfHeaders('POST')['X-CSRF-Token'];
+    if (csrf) request.setRequestHeader('X-CSRF-Token', csrf);
+    if (activeSiteId) request.setRequestHeader('X-ChallanSe-Site-Id', activeSiteId);
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress?.(Math.round((event.loaded / event.total) * 100));
+    };
+    request.onerror = () => reject(new ApiError(0, 'Upload was interrupted. Please retry.'));
+    request.onload = () => {
+      let payload: { receiptId?: string; status?: string; error?: { code?: string; message?: string } } = {};
+      try { payload = JSON.parse(request.responseText || '{}'); } catch { /* handled below */ }
+      if (request.status >= 200 && request.status < 300 && payload.receiptId && payload.status) {
+        onProgress?.(100);
+        resolve({ receiptId: payload.receiptId, status: payload.status });
+      } else {
+        reject(new ApiError(request.status, payload.error?.message || 'Invoice image could not be uploaded.', payload.error?.code));
+      }
+    };
+    request.send(file);
   });
 }
 

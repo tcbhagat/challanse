@@ -17,10 +17,10 @@ CREATE TABLE IF NOT EXISTS organizations (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Note: `active`, `image_byte_limit`, and `storage_byte_limit` already exist on
+-- sites (defined in 0001_initial.sql) and are intentionally NOT re-added here;
+-- SQLite rejects duplicate ADD COLUMN statements on a fresh D1 database.
 ALTER TABLE sites ADD COLUMN organization_id TEXT REFERENCES organizations(id);
-ALTER TABLE sites ADD COLUMN active INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE sites ADD COLUMN image_byte_limit INTEGER NOT NULL DEFAULT 5000000;
-ALTER TABLE sites ADD COLUMN storage_byte_limit INTEGER NOT NULL DEFAULT 5000000000;
 
 -- Enrichment receipts (processed receipt data)
 CREATE TABLE IF NOT EXISTS enrichment_receipts (
