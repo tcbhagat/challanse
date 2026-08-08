@@ -2,6 +2,7 @@ import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 
 const contactUrl = 'https://www.constrovet.com/pages/contact.html?interest=challanse';
+const clientPortalUrl = 'https://review.challanse.constrovet.com/';
 const pageErrors = new WeakMap<object, { consoleErrors: string[]; failedRequests: string[] }>();
 
 test.beforeEach(async ({ page }) => {
@@ -89,12 +90,9 @@ test('anonymous visitor completes the fictional invoice demonstration', async ({
   await expect(page.getByText(/stores nothing/)).toBeVisible();
 });
 
-test('real invoice action uses the private-access contact route', async ({ page }) => {
-  const control = page.getByRole('link', { name: 'Process my invoice' }).first();
-  await expect(control).toHaveAttribute('href', contactUrl);
-  await control.click();
-  await expect(page).toHaveURL(contactUrl);
-  await expect(page.locator('#interest')).toHaveValue('ChallanSe pilot');
+test('registered-client action uses the Access-protected portal', async ({ page }) => {
+  const control = page.getByRole('link', { name: 'Client Sign In' }).first();
+  await expect(control).toHaveAttribute('href', clientPortalUrl);
 });
 
 test('landing has no serious accessibility violations', async ({ page }) => {

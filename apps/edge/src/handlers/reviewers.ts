@@ -13,6 +13,22 @@ import type { AccessIdentity, Env } from '../types';
 import { MAX_WEB_IMAGE_BYTES, validateImage } from '../image-validation';
 import type { PurchaseOrderRow } from '../tally';
 
+async function ensureReviewerUploadDevice(
+  db: D1Database,
+  organizationId: string,
+  siteId: string,
+): Promise<string> {
+  const deviceId = `reviewer-upload:${organizationId}:${siteId}`;
+  await exec(
+    db,
+    `INSERT OR IGNORE INTO devices
+       (id, site_id, organization_id, name, token_hash, app_version, active, enrolled_at, last_seen_at)
+     VALUES (?, ?, ?, 'Reviewer web upload', ?, 'reviewer-web', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+    deviceId, siteId, organizationId, `disabled:${deviceId}`,
+  );
+  return deviceId;
+}
+
 // ─── GET /v1/reviewer/context ────────────────────────────────────────────────
 
 export async function handleReviewerContext(request: Request, env: Env, identity: AccessIdentity): Promise<Response> {
@@ -352,6 +368,7 @@ export async function handleInvoiceImage(request: Request, env: Env, identity: A
 
   const receiptId = uuid();
   const imageKey = `invoices/${reviewer.organizationId}/${reviewer.siteId}/${receiptId}.${image.extension}`;
+  const deviceId = await ensureReviewerUploadDevice(db, reviewer.organizationId, reviewer.siteId);
 
   // Store image in R2
   await env.RECEIPTS.put(imageKey, body, {
@@ -360,30 +377,47 @@ export async function handleInvoiceImage(request: Request, env: Env, identity: A
 
   // Create invoice receipt record
   const now = new Date().toISOString();
-  await exec(
-    db,
-    `INSERT INTO receipts (id, site_id, device_id, vendor_id, captured_at_unix, captured_quantity, image_key, image_bytes, image_sha256, status, version, enrichment_status, mime_type, created_at, updated_at)
-     VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, 'RECEIVED', 1, 'IMAGE_STORED', ?, ?, ?)`,
-    receiptId, reviewer.siteId,
-    vendorId, Math.floor(Date.now() / 1000), quantity, imageKey, body.byteLength,
-    imageSha256, image.mimeType,
-    now, now,
-  );
+  try {
+    await exec(
+      db,
+      `INSERT INTO receipts (id, site_id, device_id, vendor_id, captured_at_unix, captured_quantity, image_key, image_bytes, image_sha256, status, version, enrichment_status, mime_type, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'RECEIVED', 1, 'IMAGE_STORED', ?, ?, ?)`,
+      receiptId, reviewer.siteId, deviceId,
+      vendorId, Math.floor(Date.now() / 1000), quantity, imageKey, body.byteLength,
+      imageSha256, image.mimeType,
+      now, now,
+    );
+  } catch (databaseError) {
+    await env.RECEIPTS.delete(imageKey);
+    throw databaseError;
+  }
 
   // Record audit event
   const chainId = `org:${reviewer.organizationId}:site:${reviewer.siteId}`;
   await appendAuditEvent(db, chainId, 'INVOICE_CREATED', invoiceCreatedEvent(receiptId, reviewer.email, reviewer.siteId, reviewer.organizationId));
 
-  await env.RECEIPT_QUEUE.send({
-    type: 'receipt_enrichment', receiptId, organizationId: reviewer.organizationId,
-    siteId: reviewer.siteId, imageKey, imageBytes: body.byteLength,
-  });
+  let responseStatus = 'PROCESSING';
+  try {
+    await env.RECEIPT_QUEUE.send({
+      type: 'receipt_enrichment', receiptId, organizationId: reviewer.organizationId,
+      siteId: reviewer.siteId, imageKey, imageBytes: body.byteLength,
+    });
+  } catch {
+    responseStatus = 'NEEDS_REVIEW';
+    await exec(
+      db,
+      `UPDATE receipts
+          SET status = 'NEEDS_REVIEW', enrichment_status = 'QUEUE_UNAVAILABLE', updated_at = ?
+        WHERE id = ? AND site_id = ?`,
+      new Date().toISOString(), receiptId, reviewer.siteId,
+    );
+  }
 
   return json(request, env, {
     receiptId,
     imageBytes: body.byteLength,
     imageSha256,
-    status: 'PROCESSING',
+    status: responseStatus,
   }, 202);
 }
 
