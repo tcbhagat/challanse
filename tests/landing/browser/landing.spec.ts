@@ -20,6 +20,12 @@ test.beforeEach(async ({ page }) => {
       body: `<label for="interest">Review interest</label><select id="interest"><option${interest === 'challanse' ? ' selected' : ''}>ChallanSe pilot</option></select>`,
     });
   });
+  await page.route(clientPortalUrl, async route => {
+    await route.fulfill({
+      contentType: 'text/html',
+      body: '<h1>Cloudflare Access sign in</h1>',
+    });
+  });
   await page.goto('/');
   await expect(page.locator('#cv-nav-placeholder nav')).toBeVisible();
 });
@@ -31,17 +37,17 @@ test.afterEach(async ({ page }) => {
   await expect(page.locator('button[aria-hidden="true"]:visible, a[aria-hidden="true"]:visible, input[aria-hidden="true"]:visible')).toHaveCount(0);
 });
 
-test('desktop navigation exposes a real pilot destination', async ({ page, isMobile }) => {
+test('desktop navigation exposes the registered-client portal', async ({ page, isMobile }) => {
   test.skip(isMobile, 'Desktop navigation is hidden on mobile.');
   const pilotLink = page.locator('.cv-nav__links .cv-nav__cta');
-  await expect(pilotLink).toHaveAttribute('href', contactUrl);
+  await expect(pilotLink).toHaveAttribute('href', clientPortalUrl);
   expect(await pilotLink.getAttribute('data-pilot-request')).toBeNull();
   await pilotLink.click();
-  await expect(page).toHaveURL(contactUrl);
-  await expect(page.locator('#interest')).toHaveValue('ChallanSe pilot');
+  await expect(page).toHaveURL(clientPortalUrl);
+  await expect(page.getByRole('heading', { name: 'Cloudflare Access sign in' })).toBeVisible();
 });
 
-test('mobile menu reports state, closes with Escape, and exposes pilot link', async ({ page, isMobile }) => {
+test('mobile menu reports state, closes with Escape, and exposes client sign in', async ({ page, isMobile }) => {
   test.skip(!isMobile, 'Mobile drawer is hidden on desktop.');
   const menu = page.locator('#cv-hamburger');
   const drawer = page.locator('#cv-drawer');
@@ -55,12 +61,12 @@ test('mobile menu reports state, closes with Escape, and exposes pilot link', as
   await expect(menu).toBeFocused();
   await menu.click();
   const pilotLink = drawer.locator('.cv-nav__cta');
-  await expect(pilotLink).toHaveAttribute('href', contactUrl);
+  await expect(pilotLink).toHaveAttribute('href', clientPortalUrl);
   await pilotLink.focus();
   await expect(pilotLink).toBeFocused();
   await pilotLink.click();
-  await expect(page).toHaveURL(contactUrl);
-  await expect(page.locator('#interest')).toHaveValue('ChallanSe pilot');
+  await expect(page).toHaveURL(clientPortalUrl);
+  await expect(page.getByRole('heading', { name: 'Cloudflare Access sign in' })).toBeVisible();
 });
 
 test('workflow tabs work by click and keyboard with one visible panel', async ({ page }) => {
