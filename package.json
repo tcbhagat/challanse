@@ -10,12 +10,16 @@
     "check": "npm run check:html && npm run check:js && npm run check --workspaces --if-present",
     "check:html": "html-validate index.html",
     "check:js": "node --check assets/js/main.js && node --check assets/js/challanse.js",
-    "test": "npm run test --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present && node --test tests/security/*.test.mjs",
     "test:browser": "playwright test",
+    "test:landing": "node --test tests/landing/build-output.test.mjs",
+    "test:landing:browser": "playwright test --config playwright.landing.config.ts",
+    "verify:landing:live": "node scripts/verify-landing-live.mjs",
     "test:enrichment": "PYTHONPATH=services/enrichment python3 -m pytest -q services/enrichment/tests",
     "build": "npm run build:landing && npm run build --workspace @challanse/contracts --if-present && npm run build --workspace @challanse/edge && npm run build --workspace @challanse/reviewer",
     "build:landing": "node scripts/build-landing.mjs",
     "audit": "for run in 1 2 3; do lighthouse http://127.0.0.1:4173/ --only-categories=performance,accessibility,best-practices,seo --output=json --output-path=.lighthouse-$run.json --quiet --chrome-flags=\"--headless=new --no-sandbox --disable-gpu\" || exit 1; done && node scripts/check-lighthouse.mjs .lighthouse-1.json .lighthouse-2.json .lighthouse-3.json",
+    "audit:production": "node scripts/check-npm-audit.mjs",
     "cf:setup": "bash scripts/setup-cloudflare.sh",
     "cf:setup:preview": "bash scripts/setup-cloudflare.sh --preview",
     "cf:migrate": "npx wrangler d1 migrations apply challanse-core",
@@ -27,7 +31,15 @@
     "db:seed": "node scripts/seed-d1.mjs"
   },
   "overrides": {
-    "brace-expansion": "5.0.9"
+    "@istanbuljs/load-nyc-config": {
+      "js-yaml": "3.15.1"
+    },
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "10.2.6"
+    },
+    "brace-expansion": "5.0.9",
+    "js-yaml": "4.3.1",
+    "undici": "7.29.0"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.12.1",

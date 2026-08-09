@@ -52,13 +52,26 @@
     const btn    = document.getElementById("cv-hamburger");
     const drawer = document.getElementById("cv-drawer");
     if (!btn || !drawer) return;
+
+    function setOpen(open) {
+      drawer.classList.toggle("open", open);
+      btn.setAttribute("aria-expanded", String(open));
+      btn.setAttribute("aria-label", open ? "Close menu" : "Open menu");
+    }
+
     btn.addEventListener("click", () => {
-      drawer.classList.toggle("open");
+      setOpen(!drawer.classList.contains("open"));
     });
-    // Close on link click
-    drawer.querySelectorAll("a").forEach(a => {
-      a.addEventListener("click", () => drawer.classList.remove("open"));
+    drawer.querySelectorAll("a, button").forEach(control => {
+      control.addEventListener("click", () => setOpen(false));
     });
+    document.addEventListener("keydown", event => {
+      if (event.key !== "Escape" || !drawer.classList.contains("open")) return;
+      setOpen(false);
+      btn.focus();
+    });
+
+    setOpen(false);
   }
 
   /* ── 3. ACTIVE LINK HIGHLIGHT ───────────────────────────────── */
