@@ -322,6 +322,8 @@ jobs:
           path: dist/landing
       - id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5
+      - name: Verify deployed landing
+        run: npm run verify:landing:live -- "$GITHUB_SHA"
 
   deploy-cloudflare:
     # Cloudflare-native deployment: Workers (API + Reviewer), D1 migrations, Queues.

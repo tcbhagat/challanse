@@ -40,6 +40,10 @@
     sampleDialog?.querySelectorAll("[data-sample-step]").forEach((panel) => {
       panel.hidden = panel.getAttribute("data-sample-step") !== step;
     });
+    sampleDialog?.setAttribute(
+      "aria-labelledby",
+      step === "result" ? "cs-sample-result-title" : "cs-sample-title"
+    );
   }
 
   function resetSampleSelection() {

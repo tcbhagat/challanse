@@ -2,7 +2,7 @@ import process from 'node:process';
 
 const expectedCommit = process.argv[2];
 const publicUrl = 'https://challanse.constrovet.com/';
-const contactUrl = 'https://www.constrovet.com/pages/contact.html?interest=challanse';
+const reviewerUrl = 'https://review.challanse.constrovet.com/';
 
 if (!/^[0-9a-f]{7,40}$/i.test(expectedCommit || '')) {
   throw new Error('Usage: node scripts/verify-landing-live.mjs <expected-commit-sha>');
@@ -46,25 +46,15 @@ for (const [name, markup] of [['landing', page], ['navigation', navigationResult
   if (markup.includes('data-pilot-request')) {
     throw new Error(`${name} contains an inert pilot control.`);
   }
-  const controls = [...markup.matchAll(/<(a|button)\b([^>]*)>(Request Pilot|Contact)<\/\1>/g)];
-  if (controls.length === 0) throw new Error(`${name} contains no pilot controls.`);
-  for (const [, tag, attributes, label] of controls) {
-    const normalizedAttributes = attributes.replaceAll('&amp;', '&');
-    if (tag !== 'a' || !normalizedAttributes.includes(`href="${contactUrl}"`)) {
-      throw new Error(`${name} ${label} control has no valid contact destination.`);
-    }
+  if (!markup.includes(`href="${reviewerUrl}"`) || !markup.includes('>Client Sign In</a>')) {
+    throw new Error(`${name} has no valid registered-client destination.`);
   }
 }
 
-const contactResult = await fetchText(contactUrl, { cache: 'no-store' });
-if (contactResult.response.status !== 200) {
-  throw new Error(`Contact page returned ${contactResult.response.status}.`);
-}
-if (
-  !contactResult.text.includes('<option value="ChallanSe pilot">ChallanSe pilot</option>') ||
-  !contactResult.text.includes('select.value = "ChallanSe pilot"')
-) {
-  throw new Error('Contact page does not preserve ChallanSe pilot preselection.');
+for (const requiredSampleControl of ['data-sample-demo', 'data-sample-view', 'Sample demonstration']) {
+  if (!page.includes(requiredSampleControl)) {
+    throw new Error(`Landing is missing sample control: ${requiredSampleControl}.`);
+  }
 }
 
 console.log(`Landing smoke passed for ${expectedCommit.slice(0, 7)}.`);

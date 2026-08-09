@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { configureGuestControls, escapeHtmlAttribute, replacePilotControls } from '../../scripts/landing-build-utils.mjs';
+import { addPilotRequestTrigger, configureGuestControls, escapeHtmlAttribute, replacePilotControls } from '../../scripts/landing-build-utils.mjs';
 
 const guestUrl = 'https://guest.challanse.constrovet.com/';
 const reviewerUrl = 'https://review.challanse.constrovet.com/';
@@ -32,6 +32,13 @@ test('pilot-control replacement preserves safe attributes and escapes hostile UR
   assert.equal(transformed.includes(`href="${escapeHtmlAttribute(hostileUrl)}"`), true);
 });
 
+test('enabled pilot builds retain a visible dialog trigger', () => {
+  const source = '<div><a class="cs-button cs-button--secondary" data-guest-processing href="ignored">Client Sign In</a></div>';
+  const transformed = addPilotRequestTrigger(source);
+  assert.match(transformed, /<button[^>]*data-pilot-request>Request Pilot<\/button>/);
+  assert.match(transformed, /data-guest-processing/);
+});
+
 test('landing tabs remain discoverable while inactive panels remain hidden', async () => {
   const page = await readFile('dist/landing/index.html', 'utf8');
   assert.doesNotMatch(page, /role="tab"[^>]*aria-hidden=/);
@@ -49,6 +56,7 @@ test('landing exposes a browser-only sample journey and registered-client route'
   assert.match(page, /data-sample-demo>Try Sample Invoice/);
   assert.match(page, /Fictional data only/);
   assert.match(page, /Sample demonstration/);
+  assert.match(page, /id="cs-sample-result-title"/);
   assert.match(page, /data-sample-view disabled>View Sample Result/);
   assert.match(page, />Try Another Sample</);
   assert.match(page, /This demonstration stays in your browser and stores nothing/);

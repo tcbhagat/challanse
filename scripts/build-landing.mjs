@@ -1,7 +1,7 @@
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { configureGuestControls, replacePilotControls } from './landing-build-utils.mjs';
+import { addPilotRequestTrigger, configureGuestControls, replacePilotControls } from './landing-build-utils.mjs';
 
 const root = process.cwd();
 const output = path.join(root, 'dist', 'landing');
@@ -60,6 +60,8 @@ if (!pilotRequestsEnabled) {
       /\n\s*<script src="https:\/\/challenges\.cloudflare\.com\/turnstile\/v0\/api\.js\?render=explicit" async defer><\/script>/,
       ''
     );
+} else {
+  html = addPilotRequestTrigger(html);
 }
 await writeFile(htmlPath, html);
 

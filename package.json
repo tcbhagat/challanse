@@ -14,6 +14,7 @@
     "test:browser": "playwright test",
     "test:landing": "node --test tests/landing/build-output.test.mjs",
     "test:landing:browser": "playwright test --config playwright.landing.config.ts",
+    "verify:landing:live": "node scripts/verify-landing-live.mjs",
     "test:enrichment": "PYTHONPATH=services/enrichment python3 -m pytest -q services/enrichment/tests",
     "build": "npm run build:landing && npm run build --workspace @challanse/contracts --if-present && npm run build --workspace @challanse/edge && npm run build --workspace @challanse/reviewer",
     "build:landing": "node scripts/build-landing.mjs",

@@ -20,6 +20,17 @@ export function replacePilotControls(markup, contactUrl) {
   );
 }
 
+export function addPilotRequestTrigger(markup) {
+  const marker = /<a class="cs-button cs-button--secondary"[^>]*>Client Sign In<\/a>/;
+  if (!marker.test(markup)) {
+    throw new Error('Cannot add the pilot request trigger without the hero client control.');
+  }
+  return markup.replace(
+    marker,
+    match => '<button class="cs-button cs-button--secondary" type="button" data-pilot-request>Request Pilot</button>\n            ' + match
+  );
+}
+
 export function configureGuestControls(markup, enabled, guestUrl, reviewerUrl) {
   const href = escapeHtmlAttribute(enabled ? guestUrl : reviewerUrl);
   const label = enabled ? 'Process My Invoice' : 'Client Sign In';
