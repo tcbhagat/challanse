@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     project_id: str = "challanse-staging"
     upload_bucket: str = ""
     accepted_bucket: str = ""
+    backup_bucket: str = ""
     task_queue: str = "invoice-ocr"
     task_location: str = "asia-south1"
     task_worker_url: str = ""

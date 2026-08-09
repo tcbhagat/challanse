@@ -1,6 +1,2 @@
 [extend]
 useDefault = true
-
-[[allowlists]]
-description = "Historical FastAPI display title is not a credential"
-commits = ["7363d84c59ddf6601240bf496fa703d22f46869b"]

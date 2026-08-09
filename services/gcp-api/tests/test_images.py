@@ -4,7 +4,7 @@ import pytest
 from PIL import Image
 from app.images import validate_and_sanitize
 from app.schemas import UploadRequest
-from app.security import verify_razorpay_signature
+from app.security import spreadsheet_safe, verify_razorpay_signature
 
 def image_bytes(fmt: str = "PNG") -> bytes:
     output = io.BytesIO(); Image.new("RGB", (128, 128), "white").save(output, format=fmt); return output.getvalue()
@@ -30,3 +30,10 @@ def test_webhook_signature_is_constant_time_verified():
     signature = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
     assert verify_razorpay_signature(body, signature, secret)
     assert not verify_razorpay_signature(body, "0" * 64, secret)
+
+@pytest.mark.parametrize("value", ["=CMD()", "+1+1", "-2+3", "@SUM(A1:A2)"])
+def test_csv_formula_values_are_neutralized(value):
+    assert spreadsheet_safe(value) == f"'{value}"
+
+def test_csv_plain_values_are_unchanged():
+    assert spreadsheet_safe("Vendor") == "Vendor"

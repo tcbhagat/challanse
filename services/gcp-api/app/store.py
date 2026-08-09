@@ -57,7 +57,13 @@ class FirestoreStore:
             tx.set(upload_ref, {**metadata, "uid": uid, "state": "UPLOADING", "dailyLimit": entitlement.daily_limit, "retentionDays": entitlement.retention_days, "createdAt": now(), "expiresAt": now() + timedelta(hours=1)})
         apply(transaction)
 
-    def finalize_upload(self, uid: str, upload_id: str, accepted_object: str) -> dict[str, Any]:
+    def finalize_upload(
+        self,
+        uid: str,
+        upload_id: str,
+        accepted_object: str,
+        entitlement: Entitlement,
+    ) -> dict[str, Any]:
         transaction = self.db.transaction()
         upload_ref = self.db.collection("uploads").document(upload_id)
         invoice_ref = self.db.collection("invoices").document(upload_id)
@@ -69,11 +75,13 @@ class FirestoreStore:
             if not upload or upload.get("uid") != uid: raise KeyError("UPLOAD_NOT_FOUND")
             existing = invoice_ref.get(transaction=tx).to_dict()
             if existing: return existing
+            if upload.get("expiresAt") is None or upload["expiresAt"] <= now():
+                raise ValueError("UPLOAD_EXPIRED")
             user_count = int((user_ref.get(transaction=tx).to_dict() or {}).get("count", 0))
             global_count = int((global_ref.get(transaction=tx).to_dict() or {}).get("count", 0))
-            if user_count >= int(upload["dailyLimit"]): raise ValueError("DAILY_LIMIT")
+            if user_count >= entitlement.daily_limit: raise ValueError("DAILY_LIMIT")
             if global_count >= settings.global_daily_limit: raise ValueError("CAPACITY_REACHED")
-            document = {"uid": uid, "state": "PROCESSING", "filename": upload["filename"], "createdAt": now(), "expiresAt": now() + timedelta(days=int(upload["retentionDays"])), "version": 1, "fields": {}, "object": accepted_object}
+            document = {"uid": uid, "state": "PROCESSING", "filename": upload["filename"], "createdAt": now(), "expiresAt": now() + timedelta(days=entitlement.retention_days), "version": 1, "fields": {}, "object": accepted_object}
             tx.set(invoice_ref, document); tx.set(user_ref, {"count": user_count + 1, "updatedAt": now()}); tx.set(global_ref, {"count": global_count + 1, "updatedAt": now()}); tx.update(upload_ref, {"state": "COMPLETED", "completedAt": now()})
             return document
         return apply(transaction)
@@ -103,30 +111,87 @@ class FirestoreStore:
             return data
         return apply(transaction)
 
-    def mark_ocr(self, invoice_id: str, fields: dict[str, Any] | None, diagnostic: str) -> None:
-        self.db.collection("invoices").document(invoice_id).update({"fields": fields or {}, "state": "READY_TO_CONFIRM" if fields else "NEEDS_CORRECTION", "ocrDiagnostic": diagnostic, "ocrCompletedAt": now()})
+    def mark_ocr(self, invoice_id: str, fields: dict[str, Any] | None, diagnostic: str) -> bool:
+        ref = self.db.collection("invoices").document(invoice_id)
+        transaction = self.db.transaction()
+
+        @firestore.transactional
+        def apply(tx: firestore.Transaction) -> bool:
+            data = ref.get(transaction=tx).to_dict()
+            if not data or data.get("state") not in {"PROCESSING", "NEEDS_CORRECTION"}:
+                return False
+            tx.update(ref, {"fields": fields or {}, "state": "READY_TO_CONFIRM" if fields else "NEEDS_CORRECTION", "ocrDiagnostic": diagnostic, "ocrCompletedAt": now()})
+            return True
+
+        return apply(transaction)
 
     def mark_deleted(self, uid: str, invoice_id: str) -> None:
         self.invoice(uid, invoice_id); self.db.collection("invoices").document(invoice_id).update({"state": "DELETED", "deletedAt": now(), "fields": {}, "object": None}); self.db.collection("deletion_tombstones").document(invoice_id).set({"uidHash": __import__('hashlib').sha256(uid.encode()).hexdigest(), "deletedAt": now()})
 
-    def record_webhook(self, event_id: str, payload: dict[str, Any]) -> bool:
-        ref = self.db.collection("billing_events").document(event_id)
-        if ref.get().exists: return False
-        ref.create({"receivedAt": now(), "type": payload.get("event")})
-        return True
-
-    def apply_subscription_event(self, payload: dict[str, Any]) -> None:
+    def apply_billing_event(self, event_id: str, payload: dict[str, Any]) -> bool:
         subscription = payload.get("payload", {}).get("subscription", {}).get("entity", {})
         uid = (subscription.get("notes") or {}).get("firebase_uid")
-        if not uid: return
         status = subscription.get("status"); end = subscription.get("current_end")
         paid_until = datetime.fromtimestamp(end, UTC) if end else now()
         if status in {"active", "authenticated"}: update = {"plan": "PAID", "paidUntil": paid_until, "graceUntil": None}
         elif status in {"pending", "halted"}: update = {"plan": "PAST_DUE", "paidUntil": paid_until, "graceUntil": now() + timedelta(days=3)}
         elif status in {"cancelled", "completed"}: update = {"plan": "CANCEL_AT_PERIOD_END", "paidUntil": paid_until, "graceUntil": None}
-        else: return
-        update["subscriptionId"] = subscription.get("id")
-        self.db.collection("users").document(uid).set(update, merge=True)
+        else: update = None
+        event_ref = self.db.collection("billing_events").document(event_id)
+        transaction = self.db.transaction()
+
+        @firestore.transactional
+        def apply(tx: firestore.Transaction) -> bool:
+            if event_ref.get(transaction=tx).exists:
+                return False
+            tx.create(event_ref, {"processedAt": now(), "type": payload.get("event")})
+            if uid and update:
+                update["subscriptionId"] = subscription.get("id")
+                tx.set(self.db.collection("users").document(uid), update, merge=True)
+            return True
+
+        return apply(transaction)
+
+    def reserve_checkout(self, uid: str, request_id: str) -> None:
+        ref = self.db.collection("users").document(uid)
+        transaction = self.db.transaction()
+
+        @firestore.transactional
+        def apply(tx: firestore.Transaction) -> None:
+            data = ref.get(transaction=tx).to_dict() or {}
+            if data.get("plan") in {"PAID", "CANCEL_AT_PERIOD_END", "PAST_DUE"}:
+                raise ValueError("SUBSCRIPTION_EXISTS")
+            pending = data.get("pendingCheckout") or {}
+            if pending.get("expiresAt") and pending["expiresAt"] > now():
+                raise ValueError("CHECKOUT_PENDING")
+            tx.set(ref, {"pendingCheckout": {"requestId": request_id, "expiresAt": now() + timedelta(minutes=15)}}, merge=True)
+
+        apply(transaction)
+
+    def complete_checkout(self, uid: str, request_id: str, subscription_id: str) -> None:
+        ref = self.db.collection("users").document(uid)
+        transaction = self.db.transaction()
+
+        @firestore.transactional
+        def apply(tx: firestore.Transaction) -> None:
+            data = ref.get(transaction=tx).to_dict() or {}
+            if (data.get("pendingCheckout") or {}).get("requestId") != request_id:
+                raise RuntimeError("CHECKOUT_RESERVATION_LOST")
+            tx.set(ref, {"pendingCheckout": None, "subscriptionId": subscription_id, "checkoutCreatedAt": now()}, merge=True)
+
+        apply(transaction)
+
+    def release_checkout(self, uid: str, request_id: str) -> None:
+        ref = self.db.collection("users").document(uid)
+        transaction = self.db.transaction()
+
+        @firestore.transactional
+        def apply(tx: firestore.Transaction) -> None:
+            data = ref.get(transaction=tx).to_dict() or {}
+            if (data.get("pendingCheckout") or {}).get("requestId") == request_id:
+                tx.set(ref, {"pendingCheckout": None}, merge=True)
+
+        apply(transaction)
 
     def subscription_id(self, uid: str) -> str:
         value = (self.db.collection("users").document(uid).get().to_dict() or {}).get("subscriptionId")
@@ -141,8 +206,34 @@ class FirestoreStore:
         self.db.collection("support_grants").document(grant_id).set({"uid": uid, "createdAt": now(), "expiresAt": expires_at, "revokedAt": None})
         return {"grantId": grant_id, "expiresAt": expires_at}
 
+    def authorize_support_grant(self, grant_id: str, invoice_id: str) -> dict[str, Any]:
+        grant_ref = self.db.collection("support_grants").document(grant_id)
+        invoice_ref = self.db.collection("invoices").document(invoice_id)
+        transaction = self.db.transaction()
+
+        @firestore.transactional
+        def apply(tx: firestore.Transaction) -> dict[str, Any]:
+            grant = grant_ref.get(transaction=tx).to_dict()
+            if not grant or grant.get("revokedAt") or not grant.get("expiresAt") or grant["expiresAt"] <= now():
+                raise PermissionError("SUPPORT_GRANT_INVALID")
+            invoice = invoice_ref.get(transaction=tx).to_dict()
+            if not invoice or invoice.get("uid") != grant.get("uid") or invoice.get("state") == "DELETED":
+                raise KeyError("INVOICE_NOT_FOUND")
+            tx.set(self.db.collection("audit_events").document(), {"uid": grant["uid"], "invoiceId": invoice_id, "action": "SUPPORT_GRANT_USED", "timestamp": now()})
+            return invoice
+
+        return apply(transaction)
+
+    def revoke_support_grant(self, uid: str, grant_id: str) -> None:
+        ref = self.db.collection("support_grants").document(grant_id)
+        data = ref.get().to_dict()
+        if not data or data.get("uid") != uid:
+            raise KeyError("SUPPORT_GRANT_NOT_FOUND")
+        ref.update({"revokedAt": now()})
+
     def expired_invoices(self, limit: int = 200) -> list[tuple[str, dict[str, Any]]]:
-        return [(doc.id, doc.to_dict()) for doc in self.db.collection("invoices").where("state", "!=", "DELETED").where("expiresAt", "<=", now()).limit(limit).stream()]
+        query = self.db.collection("invoices").where("state", "!=", "DELETED").where("expiresAt", "<=", now()).order_by("state").order_by("expiresAt")
+        return [(doc.id, doc.to_dict()) for doc in query.limit(limit).stream()]
 
     def expire_invoice(self, invoice_id: str, data: dict[str, Any]) -> None:
         self.db.collection("invoices").document(invoice_id).update({"state": "DELETED", "deletedAt": now(), "fields": {}, "object": None})

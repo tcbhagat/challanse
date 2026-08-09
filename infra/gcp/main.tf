@@ -38,7 +38,7 @@ resource "google_pubsub_topic" "budget" {
 resource "google_pubsub_topic_iam_member" "budget_publisher" {
   topic  = google_pubsub_topic.budget.name
   role   = "roles/pubsub.publisher"
-  member = "serviceAccount:service-${data.google_project.current.number}@gcp-sa-billingbudgets.iam.gserviceaccount.com"
+  member = "serviceAccount:billing-budget-notifications@system.gserviceaccount.com"
 }
 
 resource "google_billing_budget" "monthly" {
@@ -96,11 +96,6 @@ resource "google_storage_bucket" "invoices" {
   public_access_prevention    = "enforced"
   force_destroy               = false
   labels                      = local.labels
-  versioning { enabled = true }
-  lifecycle_rule {
-    condition { num_newer_versions = 1 }
-    action { type = "Delete" }
-  }
 }
 
 resource "google_storage_bucket" "backups" {
@@ -192,16 +187,22 @@ resource "google_project_iam_member" "api_tasks" {
   member  = "serviceAccount:${google_service_account.api.email}"
 }
 
-resource "google_project_iam_member" "tasks_export" {
-  project = var.project_id
-  role    = "roles/datastore.importExportAdmin"
-  member  = "serviceAccount:${google_service_account.tasks.email}"
+resource "google_service_account_iam_member" "api_tasks_identity" {
+  service_account_id = google_service_account.tasks.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.api.email}"
 }
 
-resource "google_storage_bucket_iam_member" "tasks_backups" {
+resource "google_project_iam_member" "worker_export" {
+  project = var.project_id
+  role    = "roles/datastore.importExportAdmin"
+  member  = "serviceAccount:${google_service_account.worker.email}"
+}
+
+resource "google_storage_bucket_iam_member" "worker_backups" {
   bucket = google_storage_bucket.backups.name
   role   = "roles/storage.admin"
-  member = "serviceAccount:${google_service_account.tasks.email}"
+  member = "serviceAccount:${google_service_account.worker.email}"
 }
 
 resource "google_secret_manager_secret" "razorpay_key_id" {
@@ -282,6 +283,10 @@ resource "google_cloud_run_v2_service" "worker" {
       env {
         name  = "CHALLANSE_accepted_bucket"
         value = google_storage_bucket.invoices.name
+      }
+      env {
+        name  = "CHALLANSE_backup_bucket"
+        value = google_storage_bucket.backups.name
       }
     }
   }
@@ -460,21 +465,25 @@ resource "google_cloud_scheduler_job" "retention" {
 }
 
 resource "google_cloud_scheduler_job" "firestore_backup" {
+  count     = var.bootstrap_only ? 0 : 1
   name      = "challanse-firestore-backup"
   region    = var.region
   schedule  = "30 2 * * *"
   time_zone = "Asia/Kolkata"
   http_target {
     http_method = "POST"
-    uri         = "https://firestore.googleapis.com/v1/projects/${var.project_id}/databases/(default):exportDocuments"
-    body        = base64encode(jsonencode({ outputUriPrefix = "gs://${google_storage_bucket.backups.name}/firestore" }))
-    headers     = { "Content-Type" = "application/json" }
-    oauth_token {
+    uri         = "${google_cloud_run_v2_service.worker[0].uri}/internal/tasks/backup"
+    headers     = { X-CloudScheduler = "true" }
+    oidc_token {
       service_account_email = google_service_account.tasks.email
-      scope                 = "https://www.googleapis.com/auth/datastore"
+      audience              = google_cloud_run_v2_service.worker[0].uri
     }
   }
-  depends_on = [google_project_iam_member.tasks_export, google_storage_bucket_iam_member.tasks_backups]
+  depends_on = [
+    google_cloud_run_v2_service_iam_member.tasks_worker,
+    google_project_iam_member.worker_export,
+    google_storage_bucket_iam_member.worker_backups,
+  ]
 }
 
 resource "google_firestore_index" "invoice_history" {
@@ -491,5 +500,18 @@ resource "google_firestore_index" "invoice_history" {
   fields {
     field_path = "createdAt"
     order      = "DESCENDING"
+  }
+}
+
+resource "google_firestore_index" "invoice_retention" {
+  collection = "invoices"
+  database   = google_firestore_database.primary.name
+  fields {
+    field_path = "state"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "expiresAt"
+    order      = "ASCENDING"
   }
 }

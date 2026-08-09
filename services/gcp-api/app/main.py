@@ -2,15 +2,16 @@ import base64
 import csv
 import io
 import json
+import re
 import uuid
 import httpx
 from google.api_core.exceptions import GoogleAPIError, NotFound
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
-from .cloud import ObjectStore, TaskQueue
+from .cloud import BackupExporter, ObjectStore, TaskQueue
 from .config import settings
 from .images import validate_and_sanitize
 from .schemas import ConfirmInvoice, ConsentRequest, InvoiceFields, InvoiceView, Principal, UploadRequest
-from .security import principal, verify_razorpay_signature
+from .security import principal, spreadsheet_safe, verify_razorpay_signature
 from .store import FirestoreStore
 from .tesseract import extract_fields
 
@@ -50,11 +51,13 @@ def complete_upload(upload_id: str, user: Principal = Depends(principal)):
             if existing["state"] == "PROCESSING": tasks.enqueue_ocr(upload_id)
             return view(upload_id, existing)
         except KeyError:
+            # No durable invoice exists yet, so continue finalizing the upload.
             pass
-        upload = store.upload(user.uid, upload_id); raw = objects.read_upload(upload["object"])
+        upload = store.upload(user.uid, upload_id)
+        raw = objects.read_upload(upload["object"], int(upload["totalBytes"]))
         sanitized, mime_type = validate_and_sanitize(raw, upload["mimeType"], upload["sha256"])
         accepted_name = f"invoices/{user.uid}/{upload_id}.webp"; objects.accept(accepted_name, sanitized, mime_type)
-        try: invoice = store.finalize_upload(user.uid, upload_id, accepted_name)
+        try: invoice = store.finalize_upload(user.uid, upload_id, accepted_name, store.entitlement(user.uid))
         except Exception:
             objects.delete_accepted(accepted_name)
             raise
@@ -82,7 +85,9 @@ def delete(invoice_id: str, user: Principal = Depends(principal)):
     try:
         invoice_data = store.invoice(user.uid, invoice_id)
         try: objects.delete_accepted(invoice_data["object"])
-        except NotFound: pass
+        except NotFound:
+            # Deletion is idempotent when the object was already removed.
+            pass
         store.mark_deleted(user.uid, invoice_id)
     except KeyError as error: raise HTTPException(404, "Invoice not found.") from error
     return Response(status_code=204)
@@ -99,19 +104,43 @@ def export(invoice_id: str, format: str, user: Principal = Depends(principal)):
     except KeyError as error: raise HTTPException(404, "Invoice not found.") from error
     headers = {"Content-Disposition": f'attachment; filename="challanse-{invoice_id}.{format}"', "Cache-Control": "no-store"}
     if format == "json": return Response(json.dumps(data, ensure_ascii=False), media_type="application/json", headers=headers)
-    output = io.StringIO(); writer = csv.DictWriter(output, fieldnames=["vendor", "invoiceNumber", "invoiceDate", "material", "quantity", "unit"]); writer.writeheader(); writer.writerow(data["fields"])
+    output = io.StringIO(); writer = csv.DictWriter(output, fieldnames=["vendor", "invoiceNumber", "invoiceDate", "material", "quantity", "unit"]); writer.writeheader(); writer.writerow({key: spreadsheet_safe(value) for key, value in data["fields"].items()})
     return Response(output.getvalue(), media_type="text/csv", headers=headers)
 
 @app.post("/api/v1/support-grants", status_code=201)
 def support_grant(user: Principal = Depends(principal)): return store.create_support_grant(user.uid)
 
+@app.get("/api/v1/support/invoices/{invoice_id}", response_model=InvoiceView)
+def support_invoice(invoice_id: str, x_challanse_support_grant: str = Header(default="")):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{24,64}", x_challanse_support_grant):
+        raise HTTPException(401, "Support grant is invalid or expired.")
+    try: return view(invoice_id, store.authorize_support_grant(x_challanse_support_grant, invoice_id))
+    except PermissionError as error: raise HTTPException(401, "Support grant is invalid or expired.") from error
+    except KeyError as error: raise HTTPException(404, "Invoice not found.") from error
+
+@app.delete("/api/v1/support-grants/{grant_id}", status_code=204)
+def revoke_support_grant(grant_id: str, user: Principal = Depends(principal)):
+    try: store.revoke_support_grant(user.uid, grant_id)
+    except KeyError as error: raise HTTPException(404, "Support grant not found.") from error
+    return Response(status_code=204)
+
 @app.post("/api/v1/billing/checkout", status_code=201)
 async def billing_checkout(user: Principal = Depends(principal)):
     if not settings.razorpay_key_id or not settings.razorpay_key_secret or not settings.razorpay_plan_id: raise HTTPException(503, "Paid plan is not available yet.")
+    request_id = str(uuid.uuid4())
+    try: store.reserve_checkout(user.uid, request_id)
+    except ValueError as error: raise HTTPException(409, "A subscription or checkout is already active.") from error
     payload = {"plan_id": settings.razorpay_plan_id, "total_count": 100, "quantity": 1, "customer_notify": 1, "notes": {"firebase_uid": user.uid}}
-    async with httpx.AsyncClient(timeout=10) as client: response = await client.post("https://api.razorpay.com/v1/subscriptions", auth=(settings.razorpay_key_id, settings.razorpay_key_secret), json=payload)
-    if response.status_code >= 300: raise HTTPException(502, "Checkout could not be created.")
-    subscription = response.json(); return {"keyId": settings.razorpay_key_id, "subscriptionId": subscription["id"], "amountInr": 499}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client: response = await client.post("https://api.razorpay.com/v1/subscriptions", auth=(settings.razorpay_key_id, settings.razorpay_key_secret), json=payload)
+    except httpx.HTTPError:
+        store.release_checkout(user.uid, request_id)
+        raise HTTPException(502, "Checkout could not be created.")
+    if response.status_code >= 300:
+        store.release_checkout(user.uid, request_id)
+        raise HTTPException(502, "Checkout could not be created.")
+    subscription = response.json(); store.complete_checkout(user.uid, request_id, subscription["id"])
+    return {"keyId": settings.razorpay_key_id, "subscriptionId": subscription["id"], "amountInr": 499}
 
 @app.post("/api/v1/billing/cancel", status_code=204)
 async def billing_cancel(user: Principal = Depends(principal)):
@@ -147,6 +176,12 @@ def retention(x_cloudscheduler: str = Header(default="")):
         if object_removed: store.expire_invoice(invoice_id, data)
     return Response(status_code=204)
 
+@app.post("/internal/tasks/backup", status_code=202)
+def backup(x_cloudscheduler: str = Header(default="")):
+    if settings.service_role != "worker": raise HTTPException(404, "Not found.")
+    if settings.environment == "production" and not x_cloudscheduler: raise HTTPException(403, "Scheduler authentication required.")
+    return {"operation": BackupExporter().start()}
+
 @app.post("/internal/tasks/budget", status_code=204)
 async def budget_control(request: Request):
     if settings.service_role != "worker": raise HTTPException(404, "Not found.")
@@ -165,6 +200,5 @@ async def razorpay(request: Request, x_razorpay_signature: str = Header(default=
     if not settings.razorpay_webhook_secret or not verify_razorpay_signature(body, x_razorpay_signature, settings.razorpay_webhook_secret): raise HTTPException(401, "Invalid signature.")
     payload = json.loads(body); event_id = payload.get("event_id") or request.headers.get("x-razorpay-event-id")
     if not event_id: event_id = __import__('hashlib').sha256(body).hexdigest()
-    if not store.record_webhook(event_id, payload): return Response(status_code=204)
-    store.apply_subscription_event(payload)
+    store.apply_billing_event(event_id, payload)
     return Response(status_code=204)

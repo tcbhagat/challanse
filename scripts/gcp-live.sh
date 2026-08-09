@@ -120,17 +120,23 @@ build_image() {
   digest="$(gcloud artifacts docker images describe "$tagged_image" --project "$project" --format='value(image_summary.digest)')"
   [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || fail "Artifact Registry did not return an image digest."
   immutable_image="${tagged_image%:*}@$digest"
-  printf '%s\n' "$immutable_image" >"$(image_record)"
+  jq -n --arg project "$project" --arg commit "$sha" --arg image "$immutable_image" \
+    '{project: $project, commit: $commit, image: $image}' >"$(image_record)"
   chmod 600 "$(image_record)"
   printf 'Immutable image recorded at %s\n' "$(image_record)"
 }
 
 require_image() {
-  local record image
+  local record image project commit
   record="$(image_record)"
   test -f "$record" || fail "Run build-image $ENVIRONMENT first."
-  image="$(cat "$record")"
-  [[ "$image" =~ @sha256:[a-f0-9]{64}$ ]] || fail "Recorded image is not immutable."
+  jq -e 'type == "object" and (.project | type == "string") and (.commit | test("^[a-f0-9]{40}$")) and (.image | type == "string")' "$record" >/dev/null || fail "Image record is invalid."
+  project="$(jq -r .project "$record")"
+  commit="$(jq -r .commit "$record")"
+  image="$(jq -r .image "$record")"
+  test "$project" = "$(project_id)" || fail "Recorded image belongs to a different GCP project."
+  test "$commit" = "$(git -C "$ROOT" rev-parse HEAD)" || fail "Recorded image belongs to a different commit. Rebuild it."
+  [[ "$image" =~ ^${REGION}-docker\.pkg\.dev/${project}/challanse/api@sha256:[a-f0-9]{64}$ ]] || fail "Recorded image is not the expected immutable repository image."
   printf '%s' "$image"
 }
 

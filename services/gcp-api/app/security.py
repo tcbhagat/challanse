@@ -27,3 +27,8 @@ async def principal(authorization: str = Header(default=""), x_firebase_appcheck
 def verify_razorpay_signature(body: bytes, signature: str, secret: str) -> bool:
     expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
     return bool(signature) and hmac.compare_digest(expected, signature)
+
+def spreadsheet_safe(value):
+    if isinstance(value, str) and value.startswith(("=", "+", "-", "@")):
+        return f"'{value}"
+    return value
