@@ -100,3 +100,37 @@ export type ReconciliationRow = {
   siteReceived: number;
   isOver: boolean;
 };
+
+export const invoiceStates = [
+  'UPLOADING', 'PROCESSING', 'READY_TO_CONFIRM', 'COMPLETED', 'NEEDS_CORRECTION', 'DELETED',
+] as const;
+export const invoiceStateSchema = z.enum(invoiceStates);
+export type InvoiceState = z.infer<typeof invoiceStateSchema>;
+
+export const accountPlans = ['FREE', 'PAID', 'PAST_DUE', 'CANCEL_AT_PERIOD_END'] as const;
+export const accountPlanSchema = z.enum(accountPlans);
+export type AccountPlan = z.infer<typeof accountPlanSchema>;
+
+export const invoiceUnits = ['BAG', 'KG', 'TON', 'NOS', 'LTR', 'M3', 'UNIT'] as const;
+export const invoiceUnitSchema = z.enum(invoiceUnits);
+
+export const invoiceFieldsSchema = z.object({
+  vendor: z.string().trim().max(160).default(''),
+  invoiceNumber: z.string().trim().max(120).default(''),
+  invoiceDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).or(z.literal('')),
+  material: z.string().trim().max(240).default(''),
+  quantity: z.number().nonnegative().max(1_000_000_000).nullable(),
+  unit: invoiceUnitSchema.nullable(),
+});
+export type InvoiceFields = z.infer<typeof invoiceFieldsSchema>;
+
+export const createWebUploadSchema = z.object({
+  filename: z.string().trim().min(1).max(180),
+  mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp']),
+  totalBytes: z.number().int().positive().max(5_000_000),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+});
+export type CreateWebUpload = z.infer<typeof createWebUploadSchema>;
+
+export const confirmInvoiceSchema = invoiceFieldsSchema.extend({ version: z.number().int().positive() });
+export type ConfirmInvoice = z.infer<typeof confirmInvoiceSchema>;

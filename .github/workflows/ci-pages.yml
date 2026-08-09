@@ -104,7 +104,11 @@ jobs:
         if: matrix.check == 'pip-audit' || matrix.check == 'bandit'
       - run: python -m pip_audit --requirement services/enrichment/requirements.txt
         if: matrix.check == 'pip-audit'
+      - run: python -m pip_audit --requirement services/gcp-api/requirements.txt
+        if: matrix.check == 'pip-audit'
       - run: bandit -q -r services/enrichment/app
+        if: matrix.check == 'bandit'
+      - run: bandit -q -r services/gcp-api/app
         if: matrix.check == 'bandit'
       - name: Scan Git history for secrets
         if: matrix.check == 'secret-scanning'
@@ -115,6 +119,44 @@ jobs:
       - name: Scan Terraform configuration
         if: matrix.check == 'tfscan'
         run: docker run --rm -v "$PWD:/src" aquasec/trivy@sha256:a8ca29078522f30393bdb34225e4c0994d38f37083be81a42da3a2a7e1488e9e config --skip-version-check --exit-code 1 --severity HIGH,CRITICAL /src/infra
+
+  gcp-application:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: services/gcp-api/requirements-dev.txt
+      - run: npm ci
+      - run: npm run check --workspace @challanse/client
+      - run: npm test --workspace @challanse/client
+      - run: npm run build --workspace @challanse/client
+        env:
+          VITE_FIREBASE_API_KEY: ci-public-key
+          VITE_FIREBASE_AUTH_DOMAIN: ci.firebaseapp.com
+          VITE_FIREBASE_PROJECT_ID: ci-project
+          VITE_FIREBASE_APP_ID: ci-app
+          VITE_FIREBASE_APP_CHECK_SITE_KEY: ci-site-key
+      - run: python -m pip install --requirement services/gcp-api/requirements-dev.txt
+      - run: PYTHONPATH=services/gcp-api python -m pytest -q services/gcp-api/tests
+      - run: python -m pip_audit --requirement services/gcp-api/requirements.txt
+
+  gcp-terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.9.8
+      - run: terraform fmt -check -recursive infra/gcp
+      - run: terraform -chdir=infra/gcp init -backend=false
+      - run: terraform -chdir=infra/gcp validate
 
   terraform-plan:
     # Terraform/AWS infrastructure validation — gated behind AWS_DEPLOYMENT_FROZEN.

@@ -1,5 +1,11 @@
 # ChallanSe — Local Synthetic Pilot
 
+## GCP Web Production Track
+
+An isolated GCP web-first implementation now lives under `apps/client`, `services/gcp-api`, and `infra/gcp`. It uses Firebase Authentication, private Cloud Storage, Firestore, Cloud Tasks, scale-to-zero Cloud Run, and Tesseract OCR. Follow `docs/gcp-production-runbook.md` before provisioning.
+
+AWS remains frozen. The GCP code is not production-active until staging, payment, security, privacy, and recovery gates pass.
+
 Multi-tenant construction receipt capture and reconciliation for Android field devices and finance reviewers.
 
 ## Project Status
