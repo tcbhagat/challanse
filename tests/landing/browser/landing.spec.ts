@@ -2,7 +2,7 @@ import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 
 const contactUrl = 'https://www.constrovet.com/pages/contact.html?interest=challanse';
-const guestPortalUrl = 'https://guest.challanse.constrovet.com/';
+const reviewerPortalUrl = 'https://review.challanse.constrovet.com/';
 const pageErrors = new WeakMap<object, { consoleErrors: string[]; failedRequests: string[] }>();
 
 test.beforeEach(async ({ page }) => {
@@ -20,7 +20,7 @@ test.beforeEach(async ({ page }) => {
       body: `<label for="interest">Review interest</label><select id="interest"><option${interest === 'challanse' ? ' selected' : ''}>ChallanSe pilot</option></select>`,
     });
   });
-  await page.route(guestPortalUrl, async route => {
+  await page.route(reviewerPortalUrl, async route => {
     await route.fulfill({
       contentType: 'text/html',
       body: '<h1>Cloudflare Access one-time PIN</h1>',
@@ -37,17 +37,17 @@ test.afterEach(async ({ page }) => {
   await expect(page.locator('button[aria-hidden="true"]:visible, a[aria-hidden="true"]:visible, input[aria-hidden="true"]:visible')).toHaveCount(0);
 });
 
-test('desktop navigation exposes the private guest workspace', async ({ page, isMobile }) => {
+test('desktop navigation exposes registered-client sign in', async ({ page, isMobile }) => {
   test.skip(isMobile, 'Desktop navigation is hidden on mobile.');
   const pilotLink = page.locator('.cv-nav__links .cv-nav__cta');
-  await expect(pilotLink).toHaveAttribute('href', guestPortalUrl);
+  await expect(pilotLink).toHaveAttribute('href', reviewerPortalUrl);
   expect(await pilotLink.getAttribute('data-pilot-request')).toBeNull();
   await pilotLink.click();
-  await expect(page).toHaveURL(guestPortalUrl);
+  await expect(page).toHaveURL(reviewerPortalUrl);
   await expect(page.getByRole('heading', { name: 'Cloudflare Access one-time PIN' })).toBeVisible();
 });
 
-test('mobile menu reports state, closes with Escape, and exposes guest processing', async ({ page, isMobile }) => {
+test('mobile menu reports state, closes with Escape, and exposes client sign in', async ({ page, isMobile }) => {
   test.skip(!isMobile, 'Mobile drawer is hidden on desktop.');
   const menu = page.locator('#cv-hamburger');
   const drawer = page.locator('#cv-drawer');
@@ -61,11 +61,11 @@ test('mobile menu reports state, closes with Escape, and exposes guest processin
   await expect(menu).toBeFocused();
   await menu.click();
   const pilotLink = drawer.locator('.cv-nav__cta');
-  await expect(pilotLink).toHaveAttribute('href', guestPortalUrl);
+  await expect(pilotLink).toHaveAttribute('href', reviewerPortalUrl);
   await pilotLink.focus();
   await expect(pilotLink).toBeFocused();
   await pilotLink.click();
-  await expect(page).toHaveURL(guestPortalUrl);
+  await expect(page).toHaveURL(reviewerPortalUrl);
   await expect(page.getByRole('heading', { name: 'Cloudflare Access one-time PIN' })).toBeVisible();
 });
 
@@ -85,9 +85,11 @@ test('workflow tabs work by click and keyboard with one visible panel', async ({
 });
 
 test('anonymous visitor completes the fictional invoice demonstration', async ({ page }) => {
-  await page.getByRole('button', { name: 'Try sample invoice' }).first().click();
+  await page.getByRole('button', { name: 'Try Sample Invoice' }).first().click();
   await expect(page.getByRole('heading', { name: 'Choose a sample invoice' })).toBeVisible();
   await page.getByRole('button', { name: /OPC Cement/ }).click();
+  await expect(page.getByRole('button', { name: 'View Sample Result' })).toBeEnabled();
+  await page.getByRole('button', { name: 'View Sample Result' }).click();
   await expect(page.getByRole('heading', { name: 'Ready for review' })).toBeVisible();
   await expect(page.locator('[data-sample-vendor]')).toHaveText('Synthetic Cement Co');
   await expect(page.locator('[data-sample-challan]')).toHaveText('CH-1001');
@@ -96,9 +98,10 @@ test('anonymous visitor completes the fictional invoice demonstration', async ({
   await expect(page.getByText(/stores nothing/)).toBeVisible();
 });
 
-test('real-invoice action uses the Access-protected guest portal', async ({ page }) => {
-  const control = page.getByRole('link', { name: 'Process My Invoice' }).first();
-  await expect(control).toHaveAttribute('href', guestPortalUrl);
+test('unfinished guest processing is replaced by registered-client sign in', async ({ page }) => {
+  const control = page.getByRole('link', { name: 'Client Sign In' }).first();
+  await expect(control).toHaveAttribute('href', 'https://review.challanse.constrovet.com/');
+  await expect(page.getByRole('link', { name: 'Process My Invoice' })).toHaveCount(0);
 });
 
 test('landing has no serious accessibility violations', async ({ page }) => {

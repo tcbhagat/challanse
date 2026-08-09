@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { escapeHtmlAttribute, replacePilotControls } from '../../scripts/landing-build-utils.mjs';
+import { configureGuestControls, escapeHtmlAttribute, replacePilotControls } from '../../scripts/landing-build-utils.mjs';
 
 const guestUrl = 'https://guest.challanse.constrovet.com/';
+const reviewerUrl = 'https://review.challanse.constrovet.com/';
 const contactUrl = 'https://www.constrovet.com/pages/contact.html?interest=challanse';
 const escapeRegExp = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-test('disabled landing output contains only functional pilot links', async () => {
+test('disabled landing output contains only released service links', async () => {
   const [page, navigation] = await Promise.all([
     readFile('dist/landing/index.html', 'utf8'),
     readFile('dist/landing/assets/nav.html', 'utf8'),
@@ -15,7 +16,7 @@ test('disabled landing output contains only functional pilot links', async () =>
 
   for (const markup of [page, navigation]) {
     assert.equal(markup.includes('data-pilot-request'), false);
-    assert.equal(markup.includes(`href="${guestUrl}"`), true);
+    assert.equal(markup.includes(`href="${guestUrl}"`), false);
   }
   assert.equal(page.includes(`href="${contactUrl.replaceAll('&', '&amp;')}"`), true);
 });
@@ -37,12 +38,20 @@ test('landing tabs remain discoverable while inactive panels remain hidden', asy
   assert.match(page, /role="tabpanel"[^>]*aria-hidden="true"[^>]*hidden/);
 });
 
-test('landing exposes a browser-only sample journey and a temporary guest route', async () => {
+test('guest controls remain gated until the private service is approved', () => {
+  const source = '<a class="cta" data-guest-processing href="ignored">Client Sign In</a>';
+  assert.equal(configureGuestControls(source, false, guestUrl, reviewerUrl), `<a class="cta" href="${reviewerUrl}">Client Sign In</a>`);
+  assert.equal(configureGuestControls(source, true, guestUrl, reviewerUrl), `<a class="cta" href="${guestUrl}">Process My Invoice</a>`);
+});
+
+test('landing exposes a browser-only sample journey and registered-client route', async () => {
   const page = await readFile('dist/landing/index.html', 'utf8');
-  assert.match(page, /data-sample-demo>Try sample invoice/);
+  assert.match(page, /data-sample-demo>Try Sample Invoice/);
   assert.match(page, /Fictional data only/);
   assert.match(page, /Sample demonstration/);
+  assert.match(page, /data-sample-view disabled>View Sample Result/);
+  assert.match(page, />Try Another Sample</);
   assert.match(page, /This demonstration stays in your browser and stores nothing/);
-  assert.match(page, new RegExp(`href="${escapeRegExp(guestUrl)}">Process My Invoice<\\/a>`));
+  assert.match(page, new RegExp(`href="${escapeRegExp(reviewerUrl)}">Client Sign In<\\/a>`));
   assert.doesNotMatch(page, /type="file"/);
 });

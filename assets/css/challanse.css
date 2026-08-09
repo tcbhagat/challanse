@@ -134,6 +134,8 @@
 .cs-sample__choices { display: grid; gap: 12px; }
 .cs-sample__choices button { background: var(--cs-soft); border: 1px solid var(--cs-line); border-radius: 12px; color: var(--cs-ink); cursor: pointer; display: grid; gap: 4px; min-height: 72px; padding: 14px 16px; text-align: left; }
 .cs-sample__choices button:hover { border-color: var(--cs-amber); }
+.cs-sample__choices button[aria-pressed="true"] { background: #fff7df; border-color: var(--cs-amber); box-shadow: 0 0 0 2px rgba(245, 158, 11, .2); }
+.cs-sample__actions .cs-button:disabled { cursor: not-allowed; opacity: .5; transform: none; }
 .cs-sample__choices button:focus-visible, .cs-sample__actions .cs-button:focus-visible { outline: 3px solid var(--cs-amber); outline-offset: 3px; }
 .cs-sample__choices span { color: var(--cs-muted); font-size: .86rem; }
 .cs-sample__result { border: 1px solid var(--cs-line); border-radius: 12px; display: grid; gap: 1px; margin: 0; overflow: hidden; }

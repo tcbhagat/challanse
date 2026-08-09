@@ -71,10 +71,10 @@
           <h1 id="cs-title">Capture receipts.<br>Keep the gate moving.</h1>
           <p class="cs-lead">Supervisors photograph a challan, choose the vendor, and move on. Project teams get a clear path from field receipt to review.</p>
           <div class="cs-hero__actions">
-            <button class="cs-button" type="button" data-sample-demo>Try sample invoice</button>
-            <a class="cs-button cs-button--secondary" href="https://guest.challanse.constrovet.com/">Process My Invoice</a>
+            <button class="cs-button" type="button" data-sample-demo>Try Sample Invoice</button>
+            <a class="cs-button cs-button--secondary" data-guest-processing href="https://review.challanse.constrovet.com/">Client Sign In</a>
           </div>
-          <p class="cs-quiet">The sample uses fictional data. Invoice processing uses a private 24-hour workspace.</p>
+          <p class="cs-quiet">The sample uses fictional data and stores nothing.</p>
         </div>
 
         <div class="cs-phone" role="img" aria-label="ChallanSe supervisor capture screen with challan camera, four vendors, and quantity controls">
@@ -201,7 +201,7 @@
           <p class="cs-eyebrow">See the workflow</p>
           <h2 id="cs-cta-title">Start with a fictional invoice.</h2>
         </div>
-        <button class="cs-button" type="button" data-sample-demo>Try sample invoice</button>
+        <button class="cs-button" type="button" data-sample-demo>Try Sample Invoice</button>
       </div>
     </section>
   </main>
@@ -220,10 +220,11 @@
         <button type="button" class="cs-dialog-close" data-sample-close aria-label="Close sample invoice">×</button>
       </div>
       <div class="cs-sample__choices" role="group" aria-label="Sample invoices">
-        <button type="button" data-sample-id="cement"><strong>OPC Cement</strong><span>25 BAG · CH-1001</span></button>
-        <button type="button" data-sample-id="steel"><strong>TMT Steel</strong><span>250 KG · CH-1002</span></button>
-        <button type="button" data-sample-id="sand"><strong>M Sand</strong><span>12.50 TON · CH-1003</span></button>
+        <button type="button" data-sample-id="cement" aria-pressed="false"><strong>OPC Cement</strong><span>25 BAG · CH-1001</span></button>
+        <button type="button" data-sample-id="steel" aria-pressed="false"><strong>TMT Steel</strong><span>250 KG · CH-1002</span></button>
+        <button type="button" data-sample-id="sand" aria-pressed="false"><strong>M Sand</strong><span>12.50 TON · CH-1003</span></button>
       </div>
+      <div class="cs-sample__actions"><button type="button" class="cs-button" data-sample-view disabled>View Sample Result</button></div>
     </div>
     <div class="cs-sample" data-sample-step="result" hidden>
       <div class="cs-dialog-header">
@@ -238,8 +239,8 @@
       </dl>
       <p class="cs-sample__notice">This demonstration stays in your browser and stores nothing.</p>
       <div class="cs-sample__actions">
-        <button type="button" class="cs-button cs-button--secondary-light" data-sample-reset>Try another</button>
-        <a class="cs-button" href="https://guest.challanse.constrovet.com/">Process My Invoice</a>
+        <button type="button" class="cs-button cs-button--secondary-light" data-sample-reset>Try Another Sample</button>
+        <a class="cs-button" data-guest-processing href="https://review.challanse.constrovet.com/">Client Sign In</a>
       </div>
     </div>
   </dialog>

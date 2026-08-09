@@ -15,6 +15,7 @@
     steel: { vendor: "Synthetic Steel Works", challan: "CH-1002", material: "TMT Steel", quantity: "250 KG" },
     sand: { vendor: "Synthetic Sand Supply", challan: "CH-1003", material: "M Sand", quantity: "12.50 TON" },
   });
+  let selectedSampleId = "";
 
   if (year) {
     year.textContent = new Date().getFullYear();
@@ -41,9 +42,17 @@
     });
   }
 
+  function resetSampleSelection() {
+    selectedSampleId = "";
+    sampleDialog.querySelectorAll("[data-sample-id]").forEach((control) => control.setAttribute("aria-pressed", "false"));
+    const viewControl = sampleDialog.querySelector("[data-sample-view]");
+    if (viewControl) viewControl.disabled = true;
+    showSampleStep("choose");
+  }
+
   function openSampleDialog() {
     if (!sampleDialog) return;
-    showSampleStep("choose");
+    resetSampleSelection();
     if (typeof sampleDialog.showModal === "function") sampleDialog.showModal();
     else sampleDialog.setAttribute("open", "");
     sampleDialog.querySelector("[data-sample-id]")?.focus();
@@ -61,20 +70,29 @@
       return;
     }
     if (event.target.closest?.("[data-sample-reset]")) {
-      showSampleStep("choose");
+      resetSampleSelection();
       sampleDialog?.querySelector("[data-sample-id]")?.focus();
+      return;
+    }
+    if (event.target.closest?.("[data-sample-view]")) {
+      const sample = sampleInvoices[selectedSampleId];
+      if (!sample || !sampleDialog) return;
+      sampleDialog.querySelector("[data-sample-vendor]").textContent = sample.vendor;
+      sampleDialog.querySelector("[data-sample-challan]").textContent = sample.challan;
+      sampleDialog.querySelector("[data-sample-material]").textContent = sample.material;
+      sampleDialog.querySelector("[data-sample-quantity]").textContent = sample.quantity;
+      showSampleStep("result");
+      sampleDialog.querySelector("[data-sample-reset]")?.focus();
       return;
     }
     const sampleControl = event.target.closest?.("[data-sample-id]");
     if (!sampleControl || !sampleDialog) return;
-    const sample = sampleInvoices[sampleControl.getAttribute("data-sample-id")];
-    if (!sample) return;
-    sampleDialog.querySelector("[data-sample-vendor]").textContent = sample.vendor;
-    sampleDialog.querySelector("[data-sample-challan]").textContent = sample.challan;
-    sampleDialog.querySelector("[data-sample-material]").textContent = sample.material;
-    sampleDialog.querySelector("[data-sample-quantity]").textContent = sample.quantity;
-    showSampleStep("result");
-    sampleDialog.querySelector("[data-sample-reset]")?.focus();
+    selectedSampleId = sampleControl.getAttribute("data-sample-id") || "";
+    sampleDialog.querySelectorAll("[data-sample-id]").forEach((control) => {
+      control.setAttribute("aria-pressed", String(control === sampleControl));
+    });
+    const viewControl = sampleDialog.querySelector("[data-sample-view]");
+    if (viewControl) viewControl.disabled = !sampleInvoices[selectedSampleId];
   });
 
   sampleDialog?.addEventListener("click", (event) => {
