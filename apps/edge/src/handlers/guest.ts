@@ -190,14 +190,29 @@ export async function handleCreateGuestUpload(request: Request, env: Env, identi
 
   const uploadId = uuid();
   const timestamp = now();
-  await env.DB.batch([
-    env.DB.prepare(`UPDATE guest_daily_usage SET accepted_uploads = accepted_uploads + 1, reserved_neurons = reserved_neurons + ?, updated_at = ?
-      WHERE usage_day = ? AND accepted_uploads < ? AND reserved_neurons + ? <= ?`).bind(reservation, timestamp, usageDay, globalLimit, reservation, neuronBudget),
-    env.DB.prepare('UPDATE guest_identity_usage SET accepted_uploads = accepted_uploads + 1, updated_at = ? WHERE usage_day = ? AND identity_hash = ? AND accepted_uploads < ?').bind(timestamp, usageDay, identityHashValue, identityLimit),
-    env.DB.prepare(`INSERT INTO guest_uploads
+  const globalReservation = await exec(env.DB,
+    `UPDATE guest_daily_usage SET accepted_uploads = accepted_uploads + 1, reserved_neurons = reserved_neurons + ?, updated_at = ?
+      WHERE usage_day = ? AND accepted_uploads < ? AND reserved_neurons + ? <= ?`,
+    reservation, timestamp, usageDay, globalLimit, reservation, neuronBudget);
+  if ((globalReservation.meta.changes ?? 0) !== 1) return error(request, env, 429, 'DAILY_CAPACITY_REACHED', 'Daily processing capacity reached. Please try tomorrow.');
+  const identityReservation = await exec(env.DB,
+    'UPDATE guest_identity_usage SET accepted_uploads = accepted_uploads + 1, updated_at = ? WHERE usage_day = ? AND identity_hash = ? AND accepted_uploads < ?',
+    timestamp, usageDay, identityHashValue, identityLimit);
+  if ((identityReservation.meta.changes ?? 0) !== 1) {
+    await exec(env.DB, 'UPDATE guest_daily_usage SET accepted_uploads = accepted_uploads - 1, reserved_neurons = reserved_neurons - ?, updated_at = ? WHERE usage_day = ?', reservation, timestamp, usageDay);
+    return error(request, env, 429, 'DAILY_CAPACITY_REACHED', 'Daily processing capacity reached. Please try tomorrow.');
+  }
+  try {
+    await exec(env.DB, `INSERT INTO guest_uploads
       (id, workspace_id, filename, declared_mime_type, total_bytes, expected_sha256, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'UPLOADING', ?, ?)`).bind(uploadId, workspace.id, filename, mimeType, totalBytes, checksum, timestamp, timestamp),
-  ]);
+      VALUES (?, ?, ?, ?, ?, ?, 'UPLOADING', ?, ?)`, uploadId, workspace.id, filename, mimeType, totalBytes, checksum, timestamp, timestamp);
+  } catch (cause) {
+    await env.DB.batch([
+      env.DB.prepare('UPDATE guest_daily_usage SET accepted_uploads = accepted_uploads - 1, reserved_neurons = reserved_neurons - ?, updated_at = ? WHERE usage_day = ?').bind(reservation, timestamp, usageDay),
+      env.DB.prepare('UPDATE guest_identity_usage SET accepted_uploads = accepted_uploads - 1, updated_at = ? WHERE usage_day = ? AND identity_hash = ?').bind(timestamp, usageDay, identityHashValue),
+    ]);
+    throw cause;
+  }
   await audit(env, workspace.id, identityHashValue, 'GUEST_UPLOAD_CREATED');
   return json(request, env, { uploadId, partSize: MAX_PART_BYTES, nextOffset: 0 }, 201);
 }
@@ -277,10 +292,18 @@ export async function handleCompleteGuestUpload(request: Request, env: Env, iden
     await env.RECEIPTS.delete(imageKey);
     throw new Error('GUEST_DURABILITY_FAILED');
   }
-  await env.RECEIPT_QUEUE.send({ type: 'guest_invoice_enrichment', receiptId, workspaceId: workspace.id, imageKey });
+  try {
+    await env.RECEIPT_QUEUE.send({ type: 'guest_invoice_enrichment', receiptId, workspaceId: workspace.id, imageKey });
+  } catch {
+    await env.DB.batch([
+      env.DB.prepare("UPDATE guest_receipts SET state = 'NEEDS_CORRECTION', updated_at = ? WHERE id = ?").bind(now(), receiptId),
+      env.DB.prepare("UPDATE guest_workspaces SET status = 'NEEDS_CORRECTION', updated_at = ? WHERE id = ?").bind(now(), workspace.id),
+    ]);
+  }
   for (const part of parts) await env.RECEIPTS.delete(part.object_key);
   await audit(env, workspace.id, await identityHash(identity, env), 'GUEST_UPLOAD_ACKNOWLEDGED');
-  return json(request, env, { receiptId, state: 'PROCESSING' }, 202);
+  const finalState = await first<{ state: string }>(env.DB, 'SELECT state FROM guest_receipts WHERE id = ?', receiptId);
+  return json(request, env, { receiptId, state: finalState?.state ?? 'NEEDS_CORRECTION' }, 202);
 }
 
 export async function handleGuestResult(request: Request, env: Env, identity: AccessIdentity, workspaceId: string): Promise<Response> {

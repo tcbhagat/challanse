@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { escapeHtmlAttribute, replacePilotControls } from '../../scripts/landing-build-utils.mjs';
 
+const guestUrl = 'https://guest.challanse.constrovet.com/';
 const contactUrl = 'https://www.constrovet.com/pages/contact.html?interest=challanse';
 
 test('disabled landing output contains only functional pilot links', async () => {
@@ -34,11 +35,11 @@ test('landing tabs remain discoverable while inactive panels remain hidden', asy
   assert.match(page, /role="tabpanel"[^>]*aria-hidden="true"[^>]*hidden/);
 });
 
-test('landing exposes a browser-only sample journey and a private real-invoice route', async () => {
+test('landing exposes a browser-only sample journey and a temporary guest route', async () => {
   const page = await readFile('dist/landing/index.html', 'utf8');
   assert.match(page, /data-sample-demo>Try sample invoice/);
   assert.match(page, /Fictional data only/);
   assert.match(page, /This demonstration stays in your browser and stores nothing/);
-  assert.match(page, /href="https:\/\/www\.constrovet\.com\/pages\/contact\.html\?interest=challanse">Process my invoice<\/a>/);
+  assert.match(page, new RegExp(`href="${guestUrl.replaceAll('.', '\\.')}">Process My Invoice<\\/a>`));
   assert.doesNotMatch(page, /type="file"/);
 });
