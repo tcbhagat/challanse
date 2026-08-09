@@ -4,11 +4,18 @@
   const workflow = document.querySelector("[data-cs-workflow]");
   const year = document.getElementById("cs-year");
   const pilotDialog = document.getElementById("cs-pilot-dialog");
+  const sampleDialog = document.getElementById("cs-sample-dialog");
   const pilotForm = document.getElementById("cs-pilot-form");
   const formStatus = document.getElementById("cs-form-status");
   const runtimeConfig = window.ChallanSeConfig || {};
   let turnstileToken = "";
   let turnstileWidgetId = null;
+  const sampleInvoices = Object.freeze({
+    cement: { vendor: "Synthetic Cement Co", challan: "CH-1001", material: "OPC Cement", quantity: "25 BAG" },
+    steel: { vendor: "Synthetic Steel Works", challan: "CH-1002", material: "TMT Steel", quantity: "250 KG" },
+    sand: { vendor: "Synthetic Sand Supply", challan: "CH-1003", material: "M Sand", quantity: "12.50 TON" },
+  });
+  let selectedSampleId = "";
 
   if (year) {
     year.textContent = new Date().getFullYear();
@@ -22,8 +29,74 @@
     pilotDialog.querySelector("input")?.focus();
   }
 
-  document.querySelectorAll("[data-pilot-request]").forEach((button) => {
-    button.addEventListener("click", openPilotDialog);
+  document.addEventListener("click", (event) => {
+    const control = event.target.closest?.("[data-pilot-request]");
+    if (!control) return;
+    event.preventDefault();
+    openPilotDialog();
+  });
+
+  function showSampleStep(step) {
+    sampleDialog?.querySelectorAll("[data-sample-step]").forEach((panel) => {
+      panel.hidden = panel.getAttribute("data-sample-step") !== step;
+    });
+  }
+
+  function resetSampleSelection() {
+    selectedSampleId = "";
+    sampleDialog.querySelectorAll("[data-sample-id]").forEach((control) => control.setAttribute("aria-pressed", "false"));
+    const viewControl = sampleDialog.querySelector("[data-sample-view]");
+    if (viewControl) viewControl.disabled = true;
+    showSampleStep("choose");
+  }
+
+  function openSampleDialog() {
+    if (!sampleDialog) return;
+    resetSampleSelection();
+    if (typeof sampleDialog.showModal === "function") sampleDialog.showModal();
+    else sampleDialog.setAttribute("open", "");
+    sampleDialog.querySelector("[data-sample-id]")?.focus();
+  }
+
+  document.addEventListener("click", (event) => {
+    const openControl = event.target.closest?.("[data-sample-demo]");
+    if (openControl) {
+      event.preventDefault();
+      openSampleDialog();
+      return;
+    }
+    if (event.target.closest?.("[data-sample-close]")) {
+      sampleDialog?.close();
+      return;
+    }
+    if (event.target.closest?.("[data-sample-reset]")) {
+      resetSampleSelection();
+      sampleDialog?.querySelector("[data-sample-id]")?.focus();
+      return;
+    }
+    if (event.target.closest?.("[data-sample-view]")) {
+      const sample = sampleInvoices[selectedSampleId];
+      if (!sample || !sampleDialog) return;
+      sampleDialog.querySelector("[data-sample-vendor]").textContent = sample.vendor;
+      sampleDialog.querySelector("[data-sample-challan]").textContent = sample.challan;
+      sampleDialog.querySelector("[data-sample-material]").textContent = sample.material;
+      sampleDialog.querySelector("[data-sample-quantity]").textContent = sample.quantity;
+      showSampleStep("result");
+      sampleDialog.querySelector("[data-sample-reset]")?.focus();
+      return;
+    }
+    const sampleControl = event.target.closest?.("[data-sample-id]");
+    if (!sampleControl || !sampleDialog) return;
+    selectedSampleId = sampleControl.getAttribute("data-sample-id") || "";
+    sampleDialog.querySelectorAll("[data-sample-id]").forEach((control) => {
+      control.setAttribute("aria-pressed", String(control === sampleControl));
+    });
+    const viewControl = sampleDialog.querySelector("[data-sample-view]");
+    if (viewControl) viewControl.disabled = !sampleInvoices[selectedSampleId];
+  });
+
+  sampleDialog?.addEventListener("click", (event) => {
+    if (event.target === sampleDialog) sampleDialog.close();
   });
 
   pilotDialog?.querySelector(".cs-dialog-close")?.addEventListener("click", () => pilotDialog.close());
@@ -94,6 +167,8 @@
       tab.setAttribute("aria-selected", String(selected));
       tab.tabIndex = selected ? 0 : -1;
       panels[index].hidden = !selected;
+      panels[index].tabIndex = selected ? 0 : -1;
+      panels[index].setAttribute("aria-hidden", String(!selected));
     });
 
     if (moveFocus) {
