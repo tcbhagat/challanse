@@ -37,7 +37,20 @@ import { handleChainStatus, handleChainVerifyDag, handleAlertsList, handleAlertA
 // Local pilot bridge endpoints (ENVIRONMENT=local-pilot only)
 import { handleLocalStatus, handleLocalEnrollmentCodes } from './handlers/local';
 import { drainReceiptEnrichment } from './enrichment-drain';
-import { isReceiptMessage, processReceiptWithWorkersAi } from './receipt-enrichment';
+import { isGuestReceiptMessage, isReceiptMessage, processGuestReceiptWithWorkersAi, processReceiptWithWorkersAi } from './receipt-enrichment';
+import {
+  deleteExpiredGuestWorkspaces,
+  handleCompleteGuestUpload,
+  handleConfirmGuestResult,
+  handleCreateGuestUpload,
+  handleCreateGuestWorkspace,
+  handleDeleteGuestWorkspace,
+  handleGuestExport,
+  handleGuestResult,
+  handleGuestSession,
+  handleGuestUploadPart,
+  handleGuestUploadStatus,
+} from './handlers/guest';
 
 // ─── Route Table ──────────────────────────────────────────────────────────────
 
@@ -62,6 +75,18 @@ const routes: RouteDef[] = [
   { method: 'GET',    pattern: '/v1/uploads/:uploadId',           handler: handleUploadStatus,      auth: 'none' },
   { method: 'PUT',    pattern: '/v1/uploads/:uploadId/parts/:partNumber', handler: handleUploadPart, auth: 'none', numberParams: [1] },
   { method: 'POST',   pattern: '/v1/uploads/:uploadId/complete',  handler: handleCompleteUpload,    auth: 'none' },
+
+  // ── Temporary guest workspaces (Cloudflare Access OTP) ─────────────
+  { method: 'POST',   pattern: '/v1/guest/session', handler: handleGuestSession, auth: 'access' },
+  { method: 'POST',   pattern: '/v1/guest/workspaces', handler: handleCreateGuestWorkspace, auth: 'access' },
+  { method: 'POST',   pattern: '/v1/guest/workspaces/:workspaceId/uploads', handler: handleCreateGuestUpload, auth: 'access' },
+  { method: 'GET',    pattern: '/v1/guest/workspaces/:workspaceId/uploads/:uploadId', handler: handleGuestUploadStatus, auth: 'access' },
+  { method: 'PUT',    pattern: '/v1/guest/workspaces/:workspaceId/uploads/:uploadId/parts/:partNumber', handler: handleGuestUploadPart, auth: 'access', numberParams: [2] },
+  { method: 'POST',   pattern: '/v1/guest/workspaces/:workspaceId/uploads/:uploadId/complete', handler: handleCompleteGuestUpload, auth: 'access' },
+  { method: 'GET',    pattern: '/v1/guest/workspaces/:workspaceId/result', handler: handleGuestResult, auth: 'access' },
+  { method: 'PATCH',  pattern: '/v1/guest/workspaces/:workspaceId/result', handler: handleConfirmGuestResult, auth: 'access' },
+  { method: 'GET',    pattern: '/v1/guest/workspaces/:workspaceId/export', handler: handleGuestExport, auth: 'access' },
+  { method: 'DELETE', pattern: '/v1/guest/workspaces/:workspaceId', handler: handleDeleteGuestWorkspace, auth: 'access' },
 
   // ── Reviewer routes (Cloudflare Access) ─────────────────────────────
   { method: 'GET',    pattern: '/v1/reviewer/context',                       handler: handleReviewerContext,           auth: 'access' },
@@ -272,6 +297,11 @@ export default {
   // guarantee queue delivery. Every production outcome remains reviewer-led.
   async queue(batch: MessageBatch, env: Env): Promise<void> {
     for (const message of batch.messages) {
+      if (isGuestReceiptMessage(message.body)) {
+        try { await processGuestReceiptWithWorkersAi(env, message.body); message.ack(); }
+        catch { message.retry(); }
+        continue;
+      }
       if (!isReceiptMessage(message.body)) { message.ack(); continue; }
       try {
         if (env.ENVIRONMENT === 'local-pilot') {
@@ -284,5 +314,8 @@ export default {
         message.retry();
       }
     }
+  },
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    await deleteExpiredGuestWorkspaces(env);
   },
 } satisfies ExportedHandler<Env>;

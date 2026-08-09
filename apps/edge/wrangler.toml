@@ -55,9 +55,12 @@ dead_letter_queue = "receipt-enrichment-dlq"
 [ai]
 binding = "AI"
 
+[triggers]
+crons = ["17 * * * *"]
+
 # ─── Environment Variables ──────────────────────────────────────────────────
 [vars]
-ALLOWED_ORIGINS = "https://challanse.constrovet.com,https://review.challanse.constrovet.com"
+ALLOWED_ORIGINS = "https://challanse.constrovet.com,https://guest.challanse.constrovet.com,https://review.challanse.constrovet.com"
 ACCESS_TEAM_DOMAIN = ""
 ACCESS_AUD = ""
 ENRICHMENT_URL = ""
@@ -66,6 +69,11 @@ TURNSTILE_SITE_KEY = ""
 PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER = "0"
 AI_MODEL = "@cf/moondream/moondream3.1-9B-A2B"
 AI_DAILY_REQUEST_LIMIT = "25"
+GUEST_DAILY_UPLOAD_LIMIT = "50"
+GUEST_DAILY_IDENTITY_LIMIT = "3"
+GUEST_DAILY_IP_LIMIT = "10"
+GUEST_AI_NEURON_BUDGET = "9000"
+GUEST_AI_NEURON_RESERVATION = "500"
 # External-provider integrations (xAI/Grok, agentmemory) are intentionally
 # disabled: these vars must remain empty in both CI and production renders.
 GROK_API_BASE_URL = ""
@@ -88,3 +96,4 @@ AGENTMEMORY_API_KEY = ""
 # XAI_API_KEY (Grok)
 # AGENTMEMORY_API_KEY
 # SESSION_ENCRYPTION_KEY
+# GUEST_IDENTITY_PEPPER

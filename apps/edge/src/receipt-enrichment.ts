@@ -10,6 +10,13 @@ type ReceiptMessage = {
   imageKey: string;
 };
 
+export type GuestReceiptMessage = {
+  type: 'guest_invoice_enrichment';
+  receiptId: string;
+  workspaceId: string;
+  imageKey: string;
+};
+
 type ExtractedFields = {
   vendorName: string | null;
   challanNumber: string | null;
@@ -20,7 +27,7 @@ type ExtractedFields = {
 
 const UNITS = new Set(['BAG', 'KG', 'TON', 'NOS', 'UNIT', 'M3', 'L']);
 
-function parseAnswer(answer: unknown): ExtractedFields | null {
+export function parseAnswer(answer: unknown): ExtractedFields | null {
   if (typeof answer !== 'string' || answer.length > 8_000) return null;
   const cleaned = answer.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   let value: unknown;
@@ -37,6 +44,53 @@ function parseAnswer(answer: unknown): ExtractedFields | null {
     quantity,
     unit: unit && UNITS.has(unit) ? unit : null,
   };
+}
+
+function estimatedNeurons(result: Record<string, unknown>): number {
+  const usage = (result.usage && typeof result.usage === 'object' ? result.usage : {}) as Record<string, unknown>;
+  const input = Number(usage.prompt_tokens ?? usage.input_tokens ?? 0);
+  const output = Number(usage.completion_tokens ?? usage.output_tokens ?? 0);
+  if (!Number.isFinite(input) || !Number.isFinite(output) || input < 0 || output < 0) return 0;
+  return Math.ceil((input * 27_273 + output * 90_909) / 1_000_000);
+}
+
+async function guestFallback(env: Env, message: GuestReceiptMessage): Promise<void> {
+  const timestamp = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE guest_receipts SET state = 'NEEDS_CORRECTION', extracted_json = '{}', updated_at = ? WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL").bind(timestamp, message.receiptId, message.workspaceId),
+    env.DB.prepare("UPDATE guest_workspaces SET status = 'NEEDS_CORRECTION', updated_at = ? WHERE id = ? AND deleted_at IS NULL").bind(timestamp, message.workspaceId),
+  ]);
+}
+
+export async function processGuestReceiptWithWorkersAi(env: Env, message: GuestReceiptMessage): Promise<void> {
+  const receipt = await first<{ id: string; mime_type: string; reserved_neurons: number }>(env.DB,
+    "SELECT id, mime_type, reserved_neurons FROM guest_receipts WHERE id = ? AND workspace_id = ? AND state = 'PROCESSING' AND deleted_at IS NULL",
+    message.receiptId, message.workspaceId);
+  if (!receipt) return;
+  if (!env.AI) return guestFallback(env, message);
+  const object = await env.RECEIPTS.get(message.imageKey);
+  if (!object) return guestFallback(env, message);
+  const bytes = new Uint8Array(await object.arrayBuffer());
+  let result: Record<string, unknown>;
+  try {
+    result = await env.AI.run(env.AI_MODEL || '@cf/moondream/moondream3.1-9B-A2B', {
+      task: 'query', image: toDataUrl(bytes, receipt.mime_type), reasoning: false, temperature: 0, max_tokens: 256, stream: false,
+      question: 'Read this invoice or challan. Return JSON only with exactly vendorName, challanNumber, materialDescription, quantity, unit. Use null when unreadable. Never infer missing values.',
+    }) as Record<string, unknown>;
+  } catch {
+    return guestFallback(env, message);
+  }
+  const actual = estimatedNeurons(result);
+  if (actual <= 0 || actual > receipt.reserved_neurons) return guestFallback(env, message);
+  const fields = parseAnswer(result.answer);
+  if (!fields) return guestFallback(env, message);
+  const timestamp = new Date().toISOString();
+  const usageDay = timestamp.slice(0, 10);
+  await env.DB.batch([
+    env.DB.prepare("UPDATE guest_receipts SET state = 'READY_TO_CONFIRM', extracted_json = ?, actual_neurons = ?, updated_at = ? WHERE id = ? AND workspace_id = ? AND state = 'PROCESSING'").bind(JSON.stringify(fields), actual, timestamp, message.receiptId, message.workspaceId),
+    env.DB.prepare("UPDATE guest_workspaces SET status = 'READY_TO_CONFIRM', updated_at = ? WHERE id = ? AND status = 'PROCESSING'").bind(timestamp, message.workspaceId),
+    env.DB.prepare('UPDATE guest_daily_usage SET actual_neurons = actual_neurons + ?, updated_at = ? WHERE usage_day = ?').bind(actual, timestamp, usageDay),
+  ]);
 }
 
 function toDataUrl(bytes: Uint8Array, mimeType: string): string {
@@ -106,4 +160,10 @@ export function isReceiptMessage(value: unknown): value is ReceiptMessage {
   if (!value || typeof value !== 'object') return false;
   const row = value as Record<string, unknown>;
   return row.type === 'receipt_enrichment' && ['receiptId', 'organizationId', 'siteId', 'imageKey'].every((key) => typeof row[key] === 'string' && row[key] !== '');
+}
+
+export function isGuestReceiptMessage(value: unknown): value is GuestReceiptMessage {
+  if (!value || typeof value !== 'object') return false;
+  const row = value as Record<string, unknown>;
+  return row.type === 'guest_invoice_enrichment' && ['receiptId', 'workspaceId', 'imageKey'].every((key) => typeof row[key] === 'string' && row[key] !== '');
 }

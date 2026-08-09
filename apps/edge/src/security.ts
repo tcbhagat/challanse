@@ -16,7 +16,7 @@ export function corsHeaders(request: Request, env: Env): HeadersInit {
   }
   return {
     'Access-Control-Allow-Origin': origin,
-    'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Part-Sha256, X-ChallanSe-Nonce, X-ChallanSe-Device-Timestamp, X-ChallanSe-Site-Id, X-ChallanSe-Play-Integrity, X-ChallanSe-Vendor-Id, X-ChallanSe-Quantity, X-ChallanSe-Unit',
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Part-Sha256, X-Part-Offset, X-Image-Sha256, X-File-Name, X-ChallanSe-CSRF, X-ChallanSe-Nonce, X-ChallanSe-Device-Timestamp, X-ChallanSe-Site-Id, X-ChallanSe-Play-Integrity, X-ChallanSe-Vendor-Id, X-ChallanSe-Quantity, X-ChallanSe-Unit',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Max-Age': '600',
     Vary: 'Origin',
