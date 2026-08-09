@@ -60,13 +60,15 @@ function putPart(path: string, bytes: ArrayBuffer, offset: number, checksum: str
 export async function uploadGuestInvoice(workspace: GuestWorkspace, file: File, onProgress: (percent: number) => void): Promise<void> {
   const bytes = await file.arrayBuffer();
   const imageSha = await sha256(bytes);
-  const session = await api<{ uploadId: string; partSize: number; nextOffset: number }>(`/v1/guest/workspaces/${workspace.workspaceId}/uploads`, {
+  const session = await api<{ uploadId: string; partSize?: number; nextOffset?: number; alreadyCompleted?: boolean }>(`/v1/guest/workspaces/${workspace.workspaceId}/uploads`, {
     method: 'POST', body: JSON.stringify({ filename: file.name, mimeType: file.type, totalBytes: file.size, sha256: imageSha }),
   }, workspace.csrfToken);
-  let offset = session.nextOffset;
-  let partNumber = Math.floor(offset / session.partSize);
+  if (session.alreadyCompleted) { onProgress(100); return; }
+  const partSize = session.partSize ?? 256 * 1024;
+  let offset = session.nextOffset ?? 0;
+  let partNumber = Math.floor(offset / partSize);
   while (offset < file.size) {
-    const part = bytes.slice(offset, Math.min(offset + session.partSize, file.size));
+    const part = bytes.slice(offset, Math.min(offset + partSize, file.size));
     const checksum = await sha256(part);
     await putPart(`/v1/guest/workspaces/${workspace.workspaceId}/uploads/${session.uploadId}/parts/${partNumber}`, part, offset, checksum, workspace.csrfToken,
       fraction => onProgress(Math.round(((offset + part.byteLength * fraction) / file.size) * 100)));

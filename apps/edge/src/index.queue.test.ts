@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({ drainReceiptEnrichment: vi.fn(), processReceiptWithWorkersAi: vi.fn() }));
+const mocks = vi.hoisted(() => ({ drainReceiptEnrichment: vi.fn(), processReceiptWithWorkersAi: vi.fn(), processGuestReceiptWithWorkersAi: vi.fn() }));
 
 vi.mock('./enrichment-drain', () => ({ drainReceiptEnrichment: mocks.drainReceiptEnrichment }));
 vi.mock('./receipt-enrichment', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./receipt-enrichment')>();
-  return { ...actual, processReceiptWithWorkersAi: mocks.processReceiptWithWorkersAi };
+  return { ...actual, processReceiptWithWorkersAi: mocks.processReceiptWithWorkersAi, processGuestReceiptWithWorkersAi: mocks.processGuestReceiptWithWorkersAi };
 });
 
 import worker from './index';
@@ -35,6 +35,15 @@ describe('queue handler environment routing', () => {
   beforeEach(() => {
     mocks.drainReceiptEnrichment.mockClear();
     mocks.processReceiptWithWorkersAi.mockClear();
+    mocks.processGuestReceiptWithWorkersAi.mockClear();
+  });
+
+  it('routes guest messages to the isolated Workers AI processor', async () => {
+    const guestBatch = { messages: [{ body: { type: 'guest_invoice_enrichment', receiptId: 'receipt-1', workspaceId: 'workspace-1', imageKey: 'guest/image.webp' }, ack: vi.fn(), retry: vi.fn() }] } as unknown as MessageBatch;
+    const env = envWith('production');
+    await worker.queue(guestBatch, env);
+    expect(mocks.processGuestReceiptWithWorkersAi).toHaveBeenCalledWith(env, guestBatch.messages[0].body);
+    expect(guestBatch.messages[0].ack).toHaveBeenCalledOnce();
   });
 
   it('routes production messages to Workers AI enrichment', async () => {

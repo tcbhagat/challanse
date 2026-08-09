@@ -23,6 +23,7 @@ export interface Env {
   ALLOWED_ORIGINS: string;
   ACCESS_TEAM_DOMAIN: string;
   ACCESS_AUD: string;
+  GUEST_ACCESS_AUD?: string;
   ENVIRONMENT: string;
   TURNSTILE_SITE_KEY: string;
   PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER: string;

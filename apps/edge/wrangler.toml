@@ -63,6 +63,7 @@ crons = ["17 * * * *"]
 ALLOWED_ORIGINS = "https://challanse.constrovet.com,https://guest.challanse.constrovet.com,https://review.challanse.constrovet.com"
 ACCESS_TEAM_DOMAIN = ""
 ACCESS_AUD = ""
+GUEST_ACCESS_AUD = ""
 ENRICHMENT_URL = ""
 ENVIRONMENT = "production"
 TURNSTILE_SITE_KEY = ""

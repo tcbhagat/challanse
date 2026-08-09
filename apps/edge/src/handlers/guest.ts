@@ -171,8 +171,17 @@ export async function handleCreateGuestUpload(request: Request, env: Env, identi
   if (!FILE_RE.test(filename) || !['image/jpeg', 'image/png', 'image/webp'].includes(mimeType) || !Number.isInteger(totalBytes) || totalBytes < 1 || totalBytes > MAX_IMAGE_BYTES || !SHA256_RE.test(checksum)) {
     return error(request, env, 400, 'UPLOAD_INVALID', 'Use one JPEG, PNG or WebP image up to 5 MB.');
   }
-  const existing = await first<{ id: string }>(env.DB, 'SELECT id FROM guest_uploads WHERE workspace_id = ?', workspace.id);
-  if (existing) return error(request, env, 409, 'UPLOAD_EXISTS', 'This workspace already has an invoice upload.');
+  const existing = await first<UploadRow>(env.DB, 'SELECT * FROM guest_uploads WHERE workspace_id = ?', workspace.id);
+  if (existing) {
+    if (existing.expected_sha256 !== checksum || existing.total_bytes !== totalBytes || existing.declared_mime_type !== mimeType) {
+      return error(request, env, 409, 'UPLOAD_EXISTS', 'This workspace already has a different invoice upload.');
+    }
+    if (existing.status === 'UPLOADING') {
+      return json(request, env, { uploadId: existing.id, partSize: MAX_PART_BYTES, nextOffset: existing.received_bytes });
+    }
+    const receipt = await first<{ id: string; state: string }>(env.DB, 'SELECT id, state FROM guest_receipts WHERE upload_id = ?', existing.id);
+    return json(request, env, { uploadId: existing.id, receiptId: receipt?.id ?? null, state: receipt?.state ?? 'PROCESSING', alreadyCompleted: true });
+  }
 
   const identityHashValue = await identityHash(identity, env);
   const usageDay = day();

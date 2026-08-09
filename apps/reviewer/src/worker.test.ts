@@ -38,4 +38,26 @@ describe('reviewer same-origin proxy', () => {
     ), env);
     expect(response.status).toBe(404);
   });
+
+  it('proxies only guest routes on the guest hostname', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (request: Request) => {
+      expect(request.url).toBe('https://api.challanse.constrovet.com/v1/guest/session');
+      expect(request.headers.get('Cf-Access-Jwt-Assertion')).toBe('guest-jwt');
+      return Response.json({ workspace: null });
+    }));
+    const response = await handleReviewerRequest(new Request('https://guest.challanse.constrovet.com/api/v1/guest/session', {
+      method: 'POST', headers: { 'Cf-Access-Jwt-Assertion': 'guest-jwt' },
+    }), env);
+    expect(response.status).toBe(200);
+
+    const denied = await handleReviewerRequest(new Request('https://guest.challanse.constrovet.com/api/v1/reviewer/context', {
+      headers: { 'Cf-Access-Jwt-Assertion': 'guest-jwt' },
+    }), env);
+    expect(denied.status).toBe(404);
+  });
+
+  it('serves private pages with no-store headers', async () => {
+    const response = await handleReviewerRequest(new Request('https://guest.challanse.constrovet.com/'), env);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+  });
 });

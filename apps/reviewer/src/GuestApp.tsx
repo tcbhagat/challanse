@@ -105,7 +105,7 @@ export default function GuestApp() {
       {screen === 'COMPLETED' ? <section className="guest-card"><div className="guest-success" aria-hidden="true">✓</div><h1>Completed</h1><p>Your confirmed result is ready.</p>{workspace ? <div className="guest-actions"><a className="button primary" href={guestExportUrl(workspace.workspaceId, 'csv')}>Download CSV</a><a className="button secondary" href={guestExportUrl(workspace.workspaceId, 'json')}>Download JSON</a><button className="text-button danger" onClick={remove} disabled={busy}>Delete now</button></div> : null}</section> : null}
       {screen === 'CAPACITY' ? <section className="guest-card"><h1>Daily capacity reached</h1><p>Daily processing capacity reached. Please try tomorrow.</p><a className="button secondary" href="https://challanse.constrovet.com/">Try the sample instead</a></section> : null}
       {screen === 'DELETED' ? <section className="guest-card"><div className="guest-success" aria-hidden="true">✓</div><h1>Deleted</h1><p>Your invoice, result and temporary identifiers have been removed.</p><a className="button primary" href="https://challanse.constrovet.com/">Return to ChallanSe</a></section> : null}
-      {notice ? <p className="guest-notice" role="alert">{notice}</p> : null}
+      {notice && screen !== 'CAPACITY' ? <p className="guest-notice" role="alert">{notice}</p> : null}
     </main>
     <footer className="guest-footer">Private workspace · Automatically deleted after 24 hours</footer>
   </div>;

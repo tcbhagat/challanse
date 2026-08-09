@@ -5,6 +5,7 @@ import { escapeHtmlAttribute, replacePilotControls } from '../../scripts/landing
 
 const guestUrl = 'https://guest.challanse.constrovet.com/';
 const contactUrl = 'https://www.constrovet.com/pages/contact.html?interest=challanse';
+const escapeRegExp = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 test('disabled landing output contains only functional pilot links', async () => {
   const [page, navigation] = await Promise.all([
@@ -14,8 +15,9 @@ test('disabled landing output contains only functional pilot links', async () =>
 
   for (const markup of [page, navigation]) {
     assert.equal(markup.includes('data-pilot-request'), false);
-    assert.equal(markup.includes(`href="${contactUrl.replace('&', '&amp;')}"`), true);
+    assert.equal(markup.includes(`href="${guestUrl}"`), true);
   }
+  assert.equal(page.includes(`href="${contactUrl.replaceAll('&', '&amp;')}"`), true);
 });
 
 test('pilot-control replacement preserves safe attributes and escapes hostile URLs', () => {
@@ -39,7 +41,8 @@ test('landing exposes a browser-only sample journey and a temporary guest route'
   const page = await readFile('dist/landing/index.html', 'utf8');
   assert.match(page, /data-sample-demo>Try sample invoice/);
   assert.match(page, /Fictional data only/);
+  assert.match(page, /Sample demonstration/);
   assert.match(page, /This demonstration stays in your browser and stores nothing/);
-  assert.match(page, new RegExp(`href="${guestUrl.replaceAll('.', '\\.')}">Process My Invoice<\\/a>`));
+  assert.match(page, new RegExp(`href="${escapeRegExp(guestUrl)}">Process My Invoice<\\/a>`));
   assert.doesNotMatch(page, /type="file"/);
 });

@@ -39,6 +39,7 @@ export async function authenticateAccessIdentity(
   request: Request,
   env: Env,
   verifyToken: typeof jwtVerify = jwtVerify,
+  audience = env.ACCESS_AUD,
 ): Promise<AccessIdentity | null> {
   if (env.ENVIRONMENT === 'local-pilot' && env.LOCAL_REVIEWER_GATEWAY_SECRET) {
     const gatewaySecret = request.headers.get('X-ChallanSe-Local-Reviewer-Secret') ?? '';
@@ -50,11 +51,11 @@ export async function authenticateAccessIdentity(
   }
   const token = request.headers.get('Cf-Access-Jwt-Assertion') ?? '';
   const domain = (env.ACCESS_TEAM_DOMAIN ?? '').trim().replace(/^https?:\/\//, '').replace(/\/$/, '');
-  if (!token || !domain || !env.ACCESS_AUD) return null;
+  if (!token || !domain || !audience) return null;
   try {
     const expectedIssuer = `https://${domain}`;
     const jwks = createRemoteJWKSet(new URL(`${expectedIssuer}/cdn-cgi/access/certs`));
-    const verified = await verifyToken(token, jwks, { issuer: expectedIssuer, audience: env.ACCESS_AUD });
+    const verified = await verifyToken(token, jwks, { issuer: expectedIssuer, audience });
     const issuer = String(verified.payload.iss ?? '');
     const subject = String(verified.payload.sub ?? '');
     const email = String(verified.payload.email ?? '').trim().toLowerCase();

@@ -16,12 +16,14 @@ function readUint24LE(bytes: Uint8Array, offset: number): number {
 
 function pngDimensions(bytes: Uint8Array): [number, number] | null {
   if (bytes.length < 24 || bytes[0] !== 0x89 || bytes[1] !== 0x50 || bytes[2] !== 0x4e || bytes[3] !== 0x47) return null;
+  const end = bytes.length - 12;
+  if (end < 24 || bytes[end + 4] !== 0x49 || bytes[end + 5] !== 0x45 || bytes[end + 6] !== 0x4e || bytes[end + 7] !== 0x44) return null;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   return [view.getUint32(16), view.getUint32(20)];
 }
 
 function jpegDimensions(bytes: Uint8Array): [number, number] | null {
-  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes.at(-2) !== 0xff || bytes.at(-1) !== 0xd9) return null;
   let offset = 2;
   while (offset + 8 < bytes.length) {
     if (bytes[offset] !== 0xff) return null;
@@ -40,6 +42,8 @@ function jpegDimensions(bytes: Uint8Array): [number, number] | null {
 function webpDimensions(bytes: Uint8Array): [number, number] | null {
   const text = (start: number, length: number) => String.fromCharCode(...bytes.slice(start, start + length));
   if (bytes.length < 30 || text(0, 4) !== 'RIFF' || text(8, 4) !== 'WEBP') return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (view.getUint32(4, true) + 8 !== bytes.length) return null;
   const kind = text(12, 4);
   if (kind === 'VP8X') return [readUint24LE(bytes, 24) + 1, readUint24LE(bytes, 27) + 1];
   if (kind === 'VP8L' && bytes[20] === 0x2f) {

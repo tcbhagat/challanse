@@ -30,6 +30,7 @@ jobs:
       - run: npm run test:landing
       - run: npx playwright install --with-deps chromium firefox
       - run: npm run test:landing:browser
+      - run: npm run test:guest:browser
       - run: bash scripts/test-edge-integration.sh
       - run: bash scripts/test-production-config.sh
       - name: Run landing Lighthouse gate
@@ -367,6 +368,7 @@ jobs:
         env:
           CLOUDFLARE_ACCESS_TEAM_DOMAIN: ${{ vars.CLOUDFLARE_ACCESS_TEAM_DOMAIN }}
           CLOUDFLARE_ACCESS_AUD: ${{ vars.CLOUDFLARE_ACCESS_AUD }}
+          CLOUDFLARE_GUEST_ACCESS_AUD: ${{ vars.CLOUDFLARE_GUEST_ACCESS_AUD }}
           ENRICHMENT_URL: ${{ vars.ENRICHMENT_URL }}
           EDGE_TO_ENRICHMENT_HMAC_KEY_ID: ${{ vars.EDGE_TO_ENRICHMENT_HMAC_KEY_ID }}
           EDGE_TO_ENRICHMENT_NEXT_HMAC_KEY_ID: ${{ vars.EDGE_TO_ENRICHMENT_NEXT_HMAC_KEY_ID }}
