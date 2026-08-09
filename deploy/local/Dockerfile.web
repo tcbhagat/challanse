@@ -4,6 +4,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY apps ./apps
 COPY packages ./packages
+COPY scripts ./scripts
 RUN npm ci && npm run build --workspace @challanse/contracts --if-present && npm run build --workspace @challanse/reviewer
 
 ENV HOME=/tmp XDG_CONFIG_HOME=/tmp

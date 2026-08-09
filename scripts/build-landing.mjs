@@ -1,6 +1,7 @@
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { configureGuestControls, replacePilotControls } from './landing-build-utils.mjs';
 
 const root = process.cwd();
 const output = path.join(root, 'dist', 'landing');
@@ -23,6 +24,9 @@ try {
 const apiBaseUrl = process.env.CHALLANSE_API_BASE_URL || '__API_BASE_URL__';
 const turnstileSiteKey = process.env.TURNSTILE_SITE_KEY || '__TURNSTILE_SITE_KEY__';
 const pilotRequestsEnabled = process.env.CHALLANSE_PILOT_REQUESTS_ENABLED === 'true';
+const guestProcessingEnabled = process.env.CHALLANSE_GUEST_PROCESSING_ENABLED === 'true';
+const guestUrl = process.env.CHALLANSE_GUEST_URL || 'https://guest.challanse.constrovet.com/';
+const reviewerUrl = process.env.CHALLANSE_REVIEWER_URL || 'https://review.challanse.constrovet.com/';
 const contactUrl =
   process.env.CHALLANSE_CONTACT_URL || 'https://www.constrovet.com/pages/contact.html?interest=challanse';
 
@@ -43,22 +47,14 @@ await writeFile(runtimePath, runtime);
 
 /* Inject cache-bust hash into the output index.html */
 const htmlPath = path.join(output, 'index.html');
-let html = (await readFile(htmlPath, 'utf8')).replace(/__CACHE_BUST__/g, cacheBust);
+let html = configureGuestControls(
+  (await readFile(htmlPath, 'utf8')).replace(/__CACHE_BUST__/g, cacheBust),
+  guestProcessingEnabled,
+  guestUrl,
+  reviewerUrl
+);
 if (!pilotRequestsEnabled) {
-  const escapedContactUrl = contactUrl
-    .replaceAll('&', '&amp;')
-    .replaceAll('"', '&quot;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;');
-  html = html
-    .replace(
-      /<button class="cs-button" type="button" data-pilot-request>Request Pilot<\/button>/g,
-      `<a class="cs-button" href="${escapedContactUrl}">Request Pilot</a>`
-    )
-    .replace(
-      /<button type="button" data-pilot-request>Contact<\/button>/g,
-      `<a href="${escapedContactUrl}">Contact</a>`
-    )
+  html = replacePilotControls(html, contactUrl)
     .replace(/\n\s*<dialog class="cs-pilot-dialog"[\s\S]*?<\/dialog>\n/, '\n')
     .replace(
       /\n\s*<script src="https:\/\/challenges\.cloudflare\.com\/turnstile\/v0\/api\.js\?render=explicit" async defer><\/script>/,
@@ -66,6 +62,16 @@ if (!pilotRequestsEnabled) {
     );
 }
 await writeFile(htmlPath, html);
+
+const navigationPath = path.join(output, 'assets', 'nav.html');
+let navigation = configureGuestControls(
+  await readFile(navigationPath, 'utf8'),
+  guestProcessingEnabled,
+  guestUrl,
+  reviewerUrl
+);
+if (!pilotRequestsEnabled) navigation = replacePilotControls(navigation, contactUrl);
+await writeFile(navigationPath, navigation);
 
 if (process.env.CHALLANSE_CUSTOM_DOMAIN) {
   await writeFile(path.join(output, 'CNAME'), `${process.env.CHALLANSE_CUSTOM_DOMAIN}\n`);

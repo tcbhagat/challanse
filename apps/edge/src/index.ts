@@ -34,8 +34,23 @@ import { handleGraphExport, handleGraphSubgraph, handleOrganizationGraph, handle
 // Audit admin endpoints (Phase 3: Merkle DAG)
 import { handleChainStatus, handleChainVerifyDag, handleAlertsList, handleAlertAcknowledge, handleChainSyncGraph } from './handlers/audit-admin';
 
-// Event/ingest endpoints
-import { handleReceiptEvent, handleReviewEvent, handleTelemetryEvent } from './handlers/events';
+// Local pilot bridge endpoints (ENVIRONMENT=local-pilot only)
+import { handleLocalStatus, handleLocalEnrollmentCodes } from './handlers/local';
+import { drainReceiptEnrichment } from './enrichment-drain';
+import { isGuestReceiptMessage, isReceiptMessage, processGuestReceiptWithWorkersAi, processReceiptWithWorkersAi } from './receipt-enrichment';
+import {
+  deleteExpiredGuestWorkspaces,
+  handleCompleteGuestUpload,
+  handleConfirmGuestResult,
+  handleCreateGuestUpload,
+  handleCreateGuestWorkspace,
+  handleDeleteGuestWorkspace,
+  handleGuestExport,
+  handleGuestResult,
+  handleGuestSession,
+  handleGuestUploadPart,
+  handleGuestUploadStatus,
+} from './handlers/guest';
 
 // ─── Route Table ──────────────────────────────────────────────────────────────
 
@@ -44,7 +59,7 @@ interface RouteDef {
   pattern: string;       // static path or /v1/resource/:param/:param2
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   handler: (...args: any[]) => Promise<Response>;
-  auth: 'access' | 'none';
+  auth: 'access' | 'guest-access' | 'none';
   /** Zero-based indices among captured params that should be parsed as numbers */
   numberParams?: number[];
 }
@@ -60,6 +75,18 @@ const routes: RouteDef[] = [
   { method: 'GET',    pattern: '/v1/uploads/:uploadId',           handler: handleUploadStatus,      auth: 'none' },
   { method: 'PUT',    pattern: '/v1/uploads/:uploadId/parts/:partNumber', handler: handleUploadPart, auth: 'none', numberParams: [1] },
   { method: 'POST',   pattern: '/v1/uploads/:uploadId/complete',  handler: handleCompleteUpload,    auth: 'none' },
+
+  // ── Temporary guest workspaces (Cloudflare Access OTP) ─────────────
+  { method: 'POST',   pattern: '/v1/guest/session', handler: handleGuestSession, auth: 'guest-access' },
+  { method: 'POST',   pattern: '/v1/guest/workspaces', handler: handleCreateGuestWorkspace, auth: 'guest-access' },
+  { method: 'POST',   pattern: '/v1/guest/workspaces/:workspaceId/uploads', handler: handleCreateGuestUpload, auth: 'guest-access' },
+  { method: 'GET',    pattern: '/v1/guest/workspaces/:workspaceId/uploads/:uploadId', handler: handleGuestUploadStatus, auth: 'guest-access' },
+  { method: 'PUT',    pattern: '/v1/guest/workspaces/:workspaceId/uploads/:uploadId/parts/:partNumber', handler: handleGuestUploadPart, auth: 'guest-access', numberParams: [2] },
+  { method: 'POST',   pattern: '/v1/guest/workspaces/:workspaceId/uploads/:uploadId/complete', handler: handleCompleteGuestUpload, auth: 'guest-access' },
+  { method: 'GET',    pattern: '/v1/guest/workspaces/:workspaceId/result', handler: handleGuestResult, auth: 'guest-access' },
+  { method: 'PATCH',  pattern: '/v1/guest/workspaces/:workspaceId/result', handler: handleConfirmGuestResult, auth: 'guest-access' },
+  { method: 'GET',    pattern: '/v1/guest/workspaces/:workspaceId/export', handler: handleGuestExport, auth: 'guest-access' },
+  { method: 'DELETE', pattern: '/v1/guest/workspaces/:workspaceId', handler: handleDeleteGuestWorkspace, auth: 'guest-access' },
 
   // ── Reviewer routes (Cloudflare Access) ─────────────────────────────
   { method: 'GET',    pattern: '/v1/reviewer/context',                       handler: handleReviewerContext,           auth: 'access' },
@@ -106,10 +133,11 @@ const routes: RouteDef[] = [
   { method: 'GET',    pattern: '/v1/admin/graph/neighbors/:nodeId',   handler: handleGraphNeighbors,        auth: 'access' },
   { method: 'GET',    pattern: '/v1/reviewer/graph/subgraph',         handler: handleGraphSubgraph,         auth: 'access' },
 
-  // ── Event/ingest routes (auth to be added in Phase 7) ───────────────
-  { method: 'POST',   pattern: '/v1/events/receipts',  handler: handleReceiptEvent,  auth: 'none' },
-  { method: 'POST',   pattern: '/v1/events/reviews',   handler: handleReviewEvent,   auth: 'none' },
-  { method: 'POST',   pattern: '/v1/events/telemetry', handler: handleTelemetryEvent,auth: 'none' },
+  // ── Event/ingest routes are local-only until signed service auth exists ──
+
+  // ── Local pilot bridge routes (ENVIRONMENT=local-pilot only) ────────
+  { method: 'GET',    pattern: '/v1/local/status',           handler: handleLocalStatus,          auth: 'none' },
+  { method: 'POST',   pattern: '/v1/local/enrollment-codes', handler: handleLocalEnrollmentCodes, auth: 'none' },
 ];
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -136,7 +164,7 @@ interface MatchResult {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   handler: (...args: any[]) => Promise<Response>;
   params: any[];
-  auth: 'access' | 'none';
+  auth: 'access' | 'guest-access' | 'none';
 }
 
 /** Match a request method+path against the route table. Returns null on miss. */
@@ -226,10 +254,10 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   // Build argument list: (request, env, [identity?], ...params)
   const args: any[] = [request, env];
 
-  if (matched.auth === 'access') {
-    const identity = await authenticateAccessIdentity(request, env);
+  if (matched.auth === 'access' || matched.auth === 'guest-access') {
+    const identity = await authenticateAccessIdentity(request, env, undefined, matched.auth === 'guest-access' ? env.GUEST_ACCESS_AUD : env.ACCESS_AUD);
     if (!identity) {
-      return error(request, env, 401, 'REVIEWER_UNAUTHORIZED', 'Reviewer authentication is required.');
+      return error(request, env, 401, 'ACCESS_UNAUTHORIZED', 'Authentication is required.');
     }
     args.push(identity);
   }
@@ -262,5 +290,32 @@ export default {
           : 'An internal error occurred processing the request.',
       );
     }
+  },
+  // ── Queue consumer: receipt-enrichment ──────────────────────────────
+  // Production uses Cloudflare Queues and Workers AI. Local pilot mode keeps
+  // its deterministic synthetic drain because `wrangler dev --local` does not
+  // guarantee queue delivery. Every production outcome remains reviewer-led.
+  async queue(batch: MessageBatch, env: Env): Promise<void> {
+    for (const message of batch.messages) {
+      if (isGuestReceiptMessage(message.body)) {
+        try { await processGuestReceiptWithWorkersAi(env, message.body); message.ack(); }
+        catch { message.retry(); }
+        continue;
+      }
+      if (!isReceiptMessage(message.body)) { message.ack(); continue; }
+      try {
+        if (env.ENVIRONMENT === 'local-pilot') {
+          await drainReceiptEnrichment(env.DB, message.body);
+        } else {
+          await processReceiptWithWorkersAi(env, message.body);
+        }
+        message.ack();
+      } catch {
+        message.retry();
+      }
+    }
+  },
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    await deleteExpiredGuestWorkspaces(env);
   },
 } satisfies ExportedHandler<Env>;

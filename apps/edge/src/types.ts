@@ -17,14 +17,23 @@ export interface Env {
   // Queues
   RECEIPT_QUEUE: Queue;
   AUDIT_QUEUE: Queue;
+  AI?: { run(model: string, inputs: Record<string, unknown>): Promise<unknown> };
 
   // Environment variables
   ALLOWED_ORIGINS: string;
   ACCESS_TEAM_DOMAIN: string;
   ACCESS_AUD: string;
+  GUEST_ACCESS_AUD?: string;
   ENVIRONMENT: string;
   TURNSTILE_SITE_KEY: string;
   PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER: string;
+  AI_MODEL: string;
+  AI_DAILY_REQUEST_LIMIT: string;
+  GUEST_DAILY_UPLOAD_LIMIT?: string;
+  GUEST_DAILY_IDENTITY_LIMIT?: string;
+  GUEST_DAILY_IP_LIMIT?: string;
+  GUEST_AI_NEURON_BUDGET?: string;
+  GUEST_AI_NEURON_RESERVATION?: string;
   GROK_API_BASE_URL: string;
   AGENTMEMORY_URL: string;
 
@@ -47,6 +56,7 @@ export interface Env {
   SESSION_ENCRYPTION_KEY?: string;
   LOCAL_REVIEWER_GATEWAY_SECRET?: string;
   LOCAL_REVIEWER_EMAILS?: string;
+  GUEST_IDENTITY_PEPPER?: string;
 }
 
 export interface AccessIdentity {

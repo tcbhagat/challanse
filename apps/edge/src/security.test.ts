@@ -4,9 +4,10 @@ import type { Env } from './types';
 
 describe('edge security primitives', () => {
   it('accepts only configured exact origins', () => {
-    const env = { ALLOWED_ORIGINS: 'https://challanse.constrovet.com,https://review.challanse.constrovet.com' } as Env;
+    const env = { ALLOWED_ORIGINS: 'https://challanse.constrovet.com,https://guest.challanse.constrovet.com,https://review.challanse.constrovet.com' } as Env;
     const origins = allowedOrigins(env);
     expect(origins.has('https://review.challanse.constrovet.com')).toBe(true);
+    expect(origins.has('https://guest.challanse.constrovet.com')).toBe(true);
     expect(origins.has('https://evil.constrovet.com')).toBe(false);
   });
 

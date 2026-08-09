@@ -33,6 +33,7 @@ const REQUIRED_PRODUCTION_VARS = [
   'RATE_LIMITS_KV_PREVIEW_ID',
   'CLOUDFLARE_ACCESS_TEAM_DOMAIN',
   'CLOUDFLARE_ACCESS_AUD',
+  'CLOUDFLARE_GUEST_ACCESS_AUD',
   'ENRICHMENT_URL',
   'EDGE_TO_ENRICHMENT_HMAC_KEY_ID',
   'EDGE_TO_ENRICHMENT_NEXT_HMAC_KEY_ID',
@@ -149,6 +150,7 @@ describe('render-edge-config.mjs', () => {
         RATE_LIMITS_KV_PREVIEW_ID: 'ci777777777777777777777777777777',
         CLOUDFLARE_ACCESS_TEAM_DOMAIN: 'ci-team.example.com',
         CLOUDFLARE_ACCESS_AUD: 'ci-audience',
+        CLOUDFLARE_GUEST_ACCESS_AUD: 'ci-guest-audience',
         ENRICHMENT_URL: 'https://ci-enrichment.example.com',
         EDGE_TO_ENRICHMENT_HMAC_KEY_ID: 'ci-hmac-id',
         EDGE_TO_ENRICHMENT_NEXT_HMAC_KEY_ID: 'ci-hmac-next-id',
@@ -161,6 +163,7 @@ describe('render-edge-config.mjs', () => {
       const toml = readFileSync(PRODUCTION_OUTPUT, 'utf8');
       expect(toml).toContain('database_id = "ci111111111111111111111111111111"');
       expect(toml).toContain('ACCESS_TEAM_DOMAIN = "ci-team.example.com"');
+      expect(toml).toContain('GUEST_ACCESS_AUD = "ci-guest-audience"');
       // External providers remain disabled even when env vars are present.
       expect(toml).toMatch(/GROK_API_BASE_URL\s*=\s*""/);
       expect(toml).toMatch(/AGENTMEMORY_URL\s*=\s*""/);
@@ -178,6 +181,7 @@ describe('render-edge-config.mjs', () => {
         RATE_LIMITS_KV_PREVIEW_ID: 'ci777777777777777777777777777777',
         CLOUDFLARE_ACCESS_TEAM_DOMAIN: 'ci-team.example.com',
         CLOUDFLARE_ACCESS_AUD: hostileValue,
+        CLOUDFLARE_GUEST_ACCESS_AUD: 'ci-guest-audience',
         ENRICHMENT_URL: 'https://ci-enrichment.example.com',
         EDGE_TO_ENRICHMENT_HMAC_KEY_ID: 'ci-hmac-id',
         EDGE_TO_ENRICHMENT_NEXT_HMAC_KEY_ID: 'ci-hmac-next-id',

@@ -7,11 +7,72 @@ import { error, json } from '../responses';
 import { authenticateDevice, authenticateDeviceNonce, DeviceAuthError } from '../auth';
 import { uuid, exec, first, getSite } from '../db';
 import { appendAuditEvent, uploadCreatedEvent, uploadCompletedEvent } from '../audit-chain';
-import { upsertGraphNode, ensureReceiptInGraph } from '../graph';
+import {
+  ensureDeviceInGraph,
+  ensureReceiptInGraph,
+  ensureSiteInGraph,
+  ensureVendorInGraph,
+  upsertGraphNode,
+} from '../graph';
+import { drainReceiptEnrichment } from '../enrichment-drain';
+import { isValidReceiptId } from '../receipt-id';
+import { MAX_WEB_IMAGE_BYTES, validateImage } from '../image-validation';
 import type { Env } from '../types';
 
 const UPLOAD_PART_SIZE = 256_000;
-const MAX_IMAGE_BYTES = 10_000_000; // 10MB max image
+const MAX_IMAGE_BYTES = MAX_WEB_IMAGE_BYTES;
+
+type ReceiptGraphDevice = {
+  id: string;
+  siteId: string;
+  organizationId: string;
+};
+
+export async function ensureCompletedReceiptGraph(
+  db: D1Database,
+  device: ReceiptGraphDevice,
+  receiptId: string,
+  imageBytes: number,
+  imageSha256: string,
+): Promise<void> {
+  await upsertGraphNode(db, device.organizationId, 'Organization', {
+    id: device.organizationId,
+  });
+  await ensureSiteInGraph(db, device.siteId, device.organizationId, {
+    id: device.siteId,
+  });
+  await ensureDeviceInGraph(db, device.id, device.siteId, device.organizationId, {
+    id: device.id,
+  });
+  const receipt = await first<{ vendor_id: string; captured_at_unix: number }>(
+    db,
+    'SELECT vendor_id, captured_at_unix FROM receipts WHERE id = ? AND site_id = ?',
+    receiptId,
+    device.siteId,
+  );
+  if (!receipt) {
+    throw new Error('Completed receipt record is missing.');
+  }
+  await ensureVendorInGraph(db, receipt.vendor_id, device.siteId, {
+    id: receipt.vendor_id,
+    organization_id: device.organizationId,
+  });
+  await ensureReceiptInGraph(
+    db,
+    receiptId,
+    device.id,
+    receipt.vendor_id,
+    device.siteId,
+    device.organizationId,
+    {
+      image_bytes: imageBytes,
+      image_sha256: imageSha256,
+      status: 'RECEIVED',
+      captured_at: receipt.captured_at_unix,
+      vendor_id: receipt.vendor_id,
+    },
+  );
+}
 
 // ─── POST /v1/uploads ────────────────────────────────────────────────────────
 
@@ -50,8 +111,17 @@ export async function handleCreateUpload(request: Request, env: Env): Promise<Re
     return error(request, env, 400, 'MISSING_FIELDS', 'Required fields: receiptId, vendorId, capturedAtUnix, capturedQuantity, imageSha256, totalBytes.');
   }
 
+  // receiptId becomes part of the R2 object key (receipts/{org}/{site}/{id}.webp),
+  // so require a UUID v4 to keep keys predictable and prevent path traversal.
+  if (!isValidReceiptId(body.receiptId)) {
+    return error(request, env, 400, 'INVALID_RECEIPT_ID', 'receiptId must be a UUID v4.');
+  }
+
   if (body.totalBytes > MAX_IMAGE_BYTES) {
     return error(request, env, 413, 'IMAGE_TOO_LARGE', `Image must be under ${MAX_IMAGE_BYTES} bytes.`);
+  }
+  if ((body.mimeType ?? 'image/webp') !== 'image/webp') {
+    return error(request, env, 400, 'IMAGE_TYPE_UNSUPPORTED', 'Mobile uploads must use WebP.');
   }
 
   // Verify site limits
@@ -87,11 +157,12 @@ export async function handleCreateUpload(request: Request, env: Env): Promise<Re
   // Create receipt record
   await exec(
     db,
-    `INSERT INTO receipts (id, site_id, device_id, vendor_id, captured_at_unix, captured_quantity, image_key, image_bytes, image_sha256, status, version, enrichment_status, mime_type, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'UPLOADING', 1, 'PENDING', ?, ?, ?)`,
+    `INSERT INTO receipts (id, site_id, device_id, vendor_id, captured_at_unix, captured_quantity, image_key, image_bytes, image_sha256, status, version, app_version, configuration_version, enrichment_status, mime_type, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'RECEIVED', 1, ?, ?, 'PENDING', ?, ?, ?)`,
     body.receiptId, device.siteId, device.id, body.vendorId,
     body.capturedAtUnix, body.capturedQuantity, imageKey,
-    body.imageSha256, body.mimeType ?? 'image/webp',
+    body.imageSha256, body.appVersion ?? 'unknown', body.configurationVersion ?? 1,
+    body.mimeType ?? 'image/webp',
     new Date().toISOString(), new Date().toISOString(),
   );
 
@@ -320,6 +391,12 @@ export async function handleCompleteUpload(request: Request, env: Env, uploadId:
     return error(request, env, 400, 'IMAGE_HASH_MISMATCH', 'Final image SHA-256 does not match declared hash.');
   }
 
+  try {
+    validateImage(combined, session.mime_type);
+  } catch (validationError) {
+    return error(request, env, 400, validationError instanceof Error ? validationError.message : 'IMAGE_DECODE_INVALID', 'The uploaded image is invalid.');
+  }
+
   // Store the assembled image in R2 under the permanent receipt key
   const imageKey = `receipts/${device.organizationId}/${device.siteId}/${session.receipt_id}.webp`;
   await env.RECEIPTS.put(imageKey, combined, {
@@ -333,7 +410,7 @@ export async function handleCompleteUpload(request: Request, env: Env, uploadId:
   const now = new Date().toISOString();
   await exec(
     db,
-    "UPDATE receipts SET image_bytes = ?, status = 'PENDING_REVIEW', enrichment_status = 'IMAGE_STORED', updated_at = ? WHERE id = ?",
+    "UPDATE receipts SET image_bytes = ?, status = 'RECEIVED', enrichment_status = 'IMAGE_STORED', updated_at = ? WHERE id = ?",
     totalBytes, now, session.receipt_id,
   );
 
@@ -350,28 +427,7 @@ export async function handleCompleteUpload(request: Request, env: Env, uploadId:
     session.receipt_id, device.id, device.siteId, device.organizationId, totalBytes,
   ));
 
-  // Record in property graph
-  // Ensure nodes for receipt context exist
-  await upsertGraphNode(db, device.organizationId, 'Organization', {
-    id: device.organizationId,
-  });
-  // Create Receipt node with edges to Device (CAPTURED_BY), Vendor (FROM_VENDOR), Site (RECORDED_AT)
-  const receiptBody = JSON.parse(request.headers.get('X-Receipt-Meta') || '{}');
-  await ensureReceiptInGraph(
-    db,
-    session.receipt_id,
-    device.id,
-    '', // vendor_id is on the receipt record; we'll update after lookup
-    device.siteId,
-    device.organizationId,
-    {
-      image_bytes: totalBytes,
-      image_sha256: actualSha256,
-      status: 'PENDING_REVIEW',
-      captured_at: now,
-      vendor_id: null, // will be filled when the receipt is enriched
-    },
-  );
+  await ensureCompletedReceiptGraph(db, device, session.receipt_id, totalBytes, actualSha256);
 
   // Send to enrichment queue
   await env.RECEIPT_QUEUE.send({
@@ -383,10 +439,20 @@ export async function handleCompleteUpload(request: Request, env: Env, uploadId:
     imageBytes: totalBytes,
   });
 
+  // Local pilot: drain inline because `wrangler dev --local` does not guarantee
+  // queue delivery. Idempotent with the local-pilot queue handler in index.ts.
+  if (env.ENVIRONMENT === 'local-pilot') {
+    await drainReceiptEnrichment(db, {
+      receiptId: session.receipt_id,
+      organizationId: device.organizationId,
+      siteId: device.siteId,
+    });
+  }
+
   return json(request, env, {
     receiptId: session.receipt_id,
     imageBytes: totalBytes,
     imageSha256: actualSha256,
-    status: 'PENDING_REVIEW',
+    status: 'RECEIVED',
   }, 202);
 }
