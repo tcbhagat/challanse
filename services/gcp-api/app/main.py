@@ -14,7 +14,7 @@ from .security import principal, verify_razorpay_signature
 from .store import FirestoreStore
 from .tesseract import extract_fields
 
-app = FastAPI(title="ChallanSe API", docs_url=None if settings.environment == "production" else "/docs")
+app = FastAPI(title="ChallanSe invoice service", docs_url=None if settings.environment == "production" else "/docs")
 store = FirestoreStore(); objects = ObjectStore(); tasks = TaskQueue()
 
 def view(invoice_id: str, data: dict) -> InvoiceView:

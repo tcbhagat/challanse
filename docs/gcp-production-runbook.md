@@ -39,14 +39,32 @@ Keep Firebase environment values and Terraform variables outside Git. Never plac
 cp apps/client/.env.example /secure/challanse-client-staging.env
 cp infra/gcp/staging.tfvars.example /secure/challanse-staging.tfvars
 export GCP_STAGING_PROJECT_ID='your-staging-project'
+export GCP_STAGING_TERRAFORM_STATE_BUCKET='your-staging-project-challanse-tfstate'
 export GCP_TFVARS_FILE='/secure/challanse-staging.tfvars'
+export GCP_CLIENT_ENV_FILE='/secure/challanse-client-staging.env'
 export AWS_DEPLOYMENT_FROZEN=true
 export PILOT_DEPLOY_ENABLED=false
 ./scripts/gcp-live.sh preflight
-./scripts/gcp-live.sh plan staging
 ```
 
-`plan` is non-deploying. Terraform creates empty Secret Manager containers only. Add secret versions through protected stdin or the Console, never shell arguments.
+## Two-phase staging deployment
+
+Run each command separately and inspect every plan before applying it:
+
+```bash
+./scripts/gcp-live.sh bootstrap-state staging
+./scripts/gcp-live.sh plan-bootstrap staging
+./scripts/gcp-live.sh apply-bootstrap staging
+./scripts/gcp-live.sh build-image staging
+./scripts/gcp-live.sh plan-application staging
+./scripts/gcp-live.sh deploy-staging
+```
+
+The bootstrap phase creates the private versioned Terraform-state bucket, APIs, Artifact Registry, service accounts, Firestore, private buckets, queues, budgets and empty Secret Manager containers. It does not create Cloud Run services.
+
+The image phase builds the pinned OCR container only after Artifact Registry exists and records its immutable digest under `/tmp`. The application phase refuses a mutable image reference.
+
+Billing defaults to disabled, so empty Razorpay secret containers do not block the free staging deployment. After KYC and legal approval, add secret versions through protected stdin or the Console, set `GCP_BILLING_ENABLED=true`, and rerun the application plan. Never place secret values in `.tfvars`, shell arguments or Git.
 
 ## Staging Acceptance
 
@@ -69,8 +87,15 @@ Production remains human-approved. Map `app.challanse.constrovet.com` only after
 
 ```bash
 export GCP_PRODUCTION_PROJECT_ID='your-production-project'
+export GCP_PRODUCTION_TERRAFORM_STATE_BUCKET='your-production-project-challanse-tfstate'
 export GCP_TFVARS_FILE='/secure/challanse-production.tfvars'
+export GCP_CLIENT_ENV_FILE='/secure/challanse-client-production.env'
 export GCP_PRODUCTION_APPROVED=true
+./scripts/gcp-live.sh bootstrap-state production
+./scripts/gcp-live.sh plan-bootstrap production
+./scripts/gcp-live.sh apply-bootstrap production
+./scripts/gcp-live.sh build-image production
+./scripts/gcp-live.sh plan-application production
 ./scripts/gcp-live.sh deploy-production
 ```
 

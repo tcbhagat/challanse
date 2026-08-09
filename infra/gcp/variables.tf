@@ -21,10 +21,21 @@ variable "region" {
 variable "container_image" {
   type        = string
   description = "Immutable Artifact Registry image digest."
+  default     = ""
   validation {
-    condition     = can(regex("@sha256:[a-f0-9]{64}$", var.container_image))
-    error_message = "container_image must use an immutable sha256 digest"
+    condition     = var.container_image == "" || can(regex("@sha256:[a-f0-9]{64}$", var.container_image))
+    error_message = "container_image must be empty for bootstrap or use an immutable sha256 digest"
   }
+}
+variable "bootstrap_only" {
+  type        = bool
+  default     = false
+  description = "Create shared platform resources without Cloud Run application services."
+}
+variable "billing_enabled" {
+  type        = bool
+  default     = false
+  description = "Attach Razorpay secret versions only after KYC and secret provisioning pass."
 }
 variable "global_daily_limit" {
   type    = number

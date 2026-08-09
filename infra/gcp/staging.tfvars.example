@@ -1,6 +1,7 @@
 project_id = "challanse-staging-project"
 billing_account_id = "replace-in-secure-tfvars"
 environment = "staging"
-container_image = "asia-south1-docker.pkg.dev/challanse-staging-project/challanse/api@sha256:replace-with-real-digest"
+bootstrap_only  = true
+billing_enabled = false
 global_daily_limit = 100
 app_origin = "https://challanse-staging-project.web.app"

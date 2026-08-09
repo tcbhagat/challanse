@@ -158,6 +158,21 @@ jobs:
       - run: terraform -chdir=infra/gcp init -backend=false
       - run: terraform -chdir=infra/gcp validate
 
+  gcp-release-gate:
+    if: always()
+    needs: [gcp-application, gcp-terraform, security]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require GCP application, infrastructure, and security checks
+        env:
+          APPLICATION_RESULT: ${{ needs.gcp-application.result }}
+          TERRAFORM_RESULT: ${{ needs.gcp-terraform.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+        run: |
+          test "$APPLICATION_RESULT" = success
+          test "$TERRAFORM_RESULT" = success
+          test "$SECURITY_RESULT" = success
+
   terraform-plan:
     # Terraform/AWS infrastructure validation — gated behind AWS_DEPLOYMENT_FROZEN.
     # This job validates the existing Terraform modules but does not deploy.

@@ -1,5 +1,6 @@
 terraform {
   required_version = ">= 1.9.8, < 2.0.0"
+  backend "gcs" {}
   required_providers {
     google = { source = "hashicorp/google", version = "~> 6.40" }
   }
@@ -246,6 +247,7 @@ resource "google_secret_manager_secret_iam_member" "api_secret_access" {
 }
 
 resource "google_cloud_run_v2_service" "worker" {
+  count               = var.bootstrap_only ? 0 : 1
   name                = "challanse-worker"
   location            = var.region
   deletion_protection = var.environment == "production"
@@ -284,9 +286,16 @@ resource "google_cloud_run_v2_service" "worker" {
     }
   }
   depends_on = [google_project_service.required]
+  lifecycle {
+    precondition {
+      condition     = can(regex("@sha256:[a-f0-9]{64}$", var.container_image))
+      error_message = "Application deployment requires an immutable container image digest."
+    }
+  }
 }
 
 resource "google_cloud_run_v2_service" "api" {
+  count               = var.bootstrap_only ? 0 : 1
   name                = "challanse-api"
   location            = var.region
   deletion_protection = var.environment == "production"
@@ -328,7 +337,7 @@ resource "google_cloud_run_v2_service" "api" {
       }
       env {
         name  = "CHALLANSE_task_worker_url"
-        value = google_cloud_run_v2_service.worker.uri
+        value = google_cloud_run_v2_service.worker[0].uri
       }
       env {
         name  = "CHALLANSE_task_service_account"
@@ -342,88 +351,110 @@ resource "google_cloud_run_v2_service" "api" {
         name  = "CHALLANSE_require_app_check"
         value = "true"
       }
-      env {
-        name = "CHALLANSE_razorpay_key_id"
-        value_source {
-          secret_key_ref {
-            secret  = google_secret_manager_secret.razorpay_key_id.secret_id
-            version = "latest"
+      dynamic "env" {
+        for_each = var.billing_enabled ? [1] : []
+        content {
+          name = "CHALLANSE_razorpay_key_id"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.razorpay_key_id.secret_id
+              version = "latest"
+            }
           }
         }
       }
-      env {
-        name = "CHALLANSE_razorpay_key_secret"
-        value_source {
-          secret_key_ref {
-            secret  = google_secret_manager_secret.razorpay_key_secret.secret_id
-            version = "latest"
+      dynamic "env" {
+        for_each = var.billing_enabled ? [1] : []
+        content {
+          name = "CHALLANSE_razorpay_key_secret"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.razorpay_key_secret.secret_id
+              version = "latest"
+            }
           }
         }
       }
-      env {
-        name = "CHALLANSE_razorpay_plan_id"
-        value_source {
-          secret_key_ref {
-            secret  = google_secret_manager_secret.razorpay_plan_id.secret_id
-            version = "latest"
+      dynamic "env" {
+        for_each = var.billing_enabled ? [1] : []
+        content {
+          name = "CHALLANSE_razorpay_plan_id"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.razorpay_plan_id.secret_id
+              version = "latest"
+            }
           }
         }
       }
-      env {
-        name = "CHALLANSE_razorpay_webhook_secret"
-        value_source {
-          secret_key_ref {
-            secret  = google_secret_manager_secret.razorpay_webhook.secret_id
-            version = "latest"
+      dynamic "env" {
+        for_each = var.billing_enabled ? [1] : []
+        content {
+          name = "CHALLANSE_razorpay_webhook_secret"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.razorpay_webhook.secret_id
+              version = "latest"
+            }
           }
         }
       }
     }
   }
   depends_on = [google_project_service.required]
+  lifecycle {
+    precondition {
+      condition     = can(regex("@sha256:[a-f0-9]{64}$", var.container_image))
+      error_message = "Application deployment requires an immutable container image digest."
+    }
+  }
 }
 
 resource "google_cloud_run_v2_service_iam_member" "api_public" {
+  count    = var.bootstrap_only ? 0 : 1
   project  = var.project_id
   location = var.region
-  name     = google_cloud_run_v2_service.api.name
+  name     = google_cloud_run_v2_service.api[0].name
   role     = "roles/run.invoker"
   member   = "allUsers"
 }
 resource "google_cloud_run_v2_service_iam_member" "tasks_worker" {
+  count    = var.bootstrap_only ? 0 : 1
   project  = var.project_id
   location = var.region
-  name     = google_cloud_run_v2_service.worker.name
+  name     = google_cloud_run_v2_service.worker[0].name
   role     = "roles/run.invoker"
   member   = "serviceAccount:${google_service_account.tasks.email}"
 }
 
 resource "google_pubsub_subscription" "budget_control" {
+  count                = var.bootstrap_only ? 0 : 1
   name                 = "challanse-budget-control"
   topic                = google_pubsub_topic.budget.name
   ack_deadline_seconds = 30
   push_config {
-    push_endpoint = "${google_cloud_run_v2_service.worker.uri}/internal/tasks/budget"
+    push_endpoint = "${google_cloud_run_v2_service.worker[0].uri}/internal/tasks/budget"
     oidc_token {
       service_account_email = google_service_account.tasks.email
-      audience              = google_cloud_run_v2_service.worker.uri
+      audience              = google_cloud_run_v2_service.worker[0].uri
     }
   }
   depends_on = [google_cloud_run_v2_service_iam_member.tasks_worker]
 }
 
 resource "google_cloud_scheduler_job" "retention" {
+  count     = var.bootstrap_only ? 0 : 1
   name      = "challanse-retention"
   region    = var.region
   schedule  = "15 2 * * *"
   time_zone = "Asia/Kolkata"
   http_target {
     http_method = "POST"
-    uri         = "${google_cloud_run_v2_service.worker.uri}/internal/tasks/retention"
+    uri         = "${google_cloud_run_v2_service.worker[0].uri}/internal/tasks/retention"
     headers     = { X-CloudScheduler = "true" }
     oidc_token {
       service_account_email = google_service_account.tasks.email
-      audience              = google_cloud_run_v2_service.worker.uri
+      audience              = google_cloud_run_v2_service.worker[0].uri
     }
   }
 }

@@ -4,6 +4,8 @@
 
 An isolated GCP web-first implementation now lives under `apps/client`, `services/gcp-api`, and `infra/gcp`. It uses Firebase Authentication, private Cloud Storage, Firestore, Cloud Tasks, scale-to-zero Cloud Run, and Tesseract OCR. Follow `docs/gcp-production-runbook.md` before provisioning.
 
+GCP provisioning is deliberately two-phase: bootstrap shared resources first, build and record an immutable container digest second, then deploy application services. Razorpay remains disabled until approved secret versions exist.
+
 AWS remains frozen. The GCP code is not production-active until staging, payment, security, privacy, and recovery gates pass.
 
 Multi-tenant construction receipt capture and reconciliation for Android field devices and finance reviewers.
