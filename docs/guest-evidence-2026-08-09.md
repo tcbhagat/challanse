@@ -2,13 +2,13 @@
 
 Generated: 2026-08-09
 
-Base commit: `7963320fa95ed85fd59182eabed997fbb8e125f3`
+Implementation commit: `b680390` (draft PR #18; not merged or deployed).
 
-Working tree: modified and intentionally uncommitted for human review.
+Working tree after this evidence amendment: clean and synchronized for human review.
 
 ## Scope
 
-This working-tree evidence records implementation, not production activation.
+This draft-branch evidence records implementation, not production activation.
 
 ## Implemented
 
@@ -43,7 +43,7 @@ This working-tree evidence records implementation, not production activation.
 
 - `npm audit --omit=dev --audit-level=high`: failed with nine high findings inherited through React Native Metro and `image-size@1.2.1`.
 - The current latest `image-size@2.0.2` is also affected by the published advisories, so no safe compatible override was retained.
-- Remote CodeQL has not rerun against the local complete-escaping patch.
+- Remote CodeQL and CI are rerunning against the complete-escaping patch; their results are not yet accepted evidence.
 - No production Cloudflare deployment, Access OTP verification or live Workers AI request was performed.
 - No 50-upload Cloudflare staging acceptance was performed because deployment remains disabled.
 
