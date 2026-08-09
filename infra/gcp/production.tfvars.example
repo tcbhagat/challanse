@@ -1,0 +1,7 @@
+project_id = "challanse-production-project"
+billing_account_id = "replace-in-secure-tfvars"
+environment = "production"
+bootstrap_only  = true
+billing_enabled = false
+global_daily_limit = 550
+app_origin = "https://app.challanse.constrovet.com"

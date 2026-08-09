@@ -1,0 +1,7 @@
+project_id = "challanse-staging-project"
+billing_account_id = "replace-in-secure-tfvars"
+environment = "staging"
+bootstrap_only  = true
+billing_enabled = false
+global_daily_limit = 100
+app_origin = "https://challanse-staging-project.web.app"

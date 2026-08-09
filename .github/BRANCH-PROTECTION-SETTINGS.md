@@ -78,6 +78,7 @@ These are the exact check names as they appear in the CI workflow
 - `security (tfscan)`
 - `integration`
 - `terraform-check`
+- `gcp-release-gate`
 
 > **Note on `security` matrix**: The `security` job uses a
 > `strategy.matrix` with six independent checks. Each matrix variant creates a
@@ -90,6 +91,10 @@ These are the exact check names as they appear in the CI workflow
 > active. It is **intentionally NOT** a required check. Use `terraform-check`
 > as the required one, which always runs (format, init, validate on both
 > staging and production).
+>
+> **Note on `gcp-release-gate`**: This aggregate check fails unless the GCP
+> web/API tests, GCP Terraform validation, and every security matrix job pass.
+> Require it before merging or deploying the GCP production track.
 
 #### ☑ Require conversation resolution before merging
 
