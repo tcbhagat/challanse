@@ -95,7 +95,7 @@ test('anonymous visitor completes the fictional invoice demonstration', async ({
   await expect(page.locator('[data-sample-challan]')).toHaveText('CH-1001');
   await expect(page.locator('[data-sample-material]')).toHaveText('OPC Cement');
   await expect(page.locator('[data-sample-quantity]')).toHaveText('25 BAG');
-  await expect(page.getByText(/stores nothing/)).toBeVisible();
+  await expect(page.locator('.cs-sample__notice')).toContainText('stores nothing');
 });
 
 test('unfinished guest processing is replaced by registered-client sign in', async ({ page }) => {
