@@ -11,6 +11,7 @@ def test_tesseract_uses_fixed_executable_arguments_and_limits_output(monkeypatch
         observed["options"] = options
         return SimpleNamespace(returncode=0, stdout="VENDOR\nInvoice CH-1\n25 BAG\n" + "x" * 120_000)
 
+    monkeypatch.setattr(type(tesseract.TESSERACT), "is_file", lambda _path: True)
     monkeypatch.setattr(tesseract.subprocess, "run", run)
     fields, diagnostic = tesseract.extract_fields(b"synthetic-image")
 
