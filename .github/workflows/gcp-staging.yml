@@ -1,0 +1,128 @@
+name: ChallanSe GCP staging deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Full main commit SHA to deploy
+        required: true
+        type: string
+      confirmation:
+        description: Type DEPLOY STAGING followed by the full commit SHA
+        required: true
+        type: string
+
+concurrency:
+  group: challanse-gcp-staging
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+  actions: read
+
+jobs:
+  deploy:
+    environment:
+      name: gcp-staging
+      url: ${{ steps.application.outputs.hosting_url }}
+    runs-on: ubuntu-latest
+    env:
+      AWS_DEPLOYMENT_FROZEN: "true"
+      PILOT_DEPLOY_ENABLED: "false"
+      GCP_BILLING_ENABLED: "false"
+      GCP_STAGING_PROJECT_ID: ${{ vars.GCP_STAGING_PROJECT_ID }}
+      GCP_STAGING_TERRAFORM_STATE_BUCKET: ${{ vars.GCP_STAGING_TERRAFORM_STATE_BUCKET }}
+      GCP_TFVARS_FILE: ${{ runner.temp }}/challanse-staging.tfvars
+      GCP_CLIENT_ENV_FILE: ${{ runner.temp }}/challanse-client-staging.env
+      TF_VAR_billing_account_id: ${{ secrets.GCP_BILLING_ACCOUNT_ID }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Validate deployment request
+        env:
+          REQUESTED_SHA: ${{ inputs.commit_sha }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          test "$REQUESTED_SHA" = "${{ github.sha }}" || {
+            echo "Dispatch this workflow from the exact main commit being deployed." >&2
+            exit 1
+          }
+          test "$CONFIRMATION" = "DEPLOY STAGING $REQUESTED_SHA" || {
+            echo "Typed confirmation did not match." >&2
+            exit 1
+          }
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 0
+      - name: Require protected main commit
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          test "$(git rev-parse HEAD)" = "${{ inputs.commit_sha }}"
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_STAGING_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_STAGING_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: npm
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.9.8
+      - name: Install pinned project tools
+        run: |
+          npm ci
+          npm install --global firebase-tools@15.26.0
+      - name: Create private deployment inputs
+        env:
+          FIREBASE_API_KEY: ${{ vars.GCP_STAGING_FIREBASE_API_KEY }}
+          FIREBASE_AUTH_DOMAIN: ${{ vars.GCP_STAGING_FIREBASE_AUTH_DOMAIN }}
+          FIREBASE_APP_ID: ${{ vars.GCP_STAGING_FIREBASE_APP_ID }}
+          APP_CHECK_SITE_KEY: ${{ vars.GCP_STAGING_APP_CHECK_SITE_KEY }}
+        run: |
+          umask 077
+          cat > "$GCP_TFVARS_FILE" <<EOF
+          project_id = "$GCP_STAGING_PROJECT_ID"
+          environment = "staging"
+          bootstrap_only = true
+          billing_enabled = false
+          global_daily_limit = 100
+          app_origin = "https://$GCP_STAGING_PROJECT_ID.web.app"
+          EOF
+          cat > "$GCP_CLIENT_ENV_FILE" <<EOF
+          VITE_FIREBASE_API_KEY=$FIREBASE_API_KEY
+          VITE_FIREBASE_AUTH_DOMAIN=$FIREBASE_AUTH_DOMAIN
+          VITE_FIREBASE_PROJECT_ID=$GCP_STAGING_PROJECT_ID
+          VITE_FIREBASE_APP_ID=$FIREBASE_APP_ID
+          VITE_FIREBASE_APP_CHECK_SITE_KEY=$APP_CHECK_SITE_KEY
+          EOF
+          test -s "$GCP_TFVARS_FILE"
+          test -s "$GCP_CLIENT_ENV_FILE"
+      - name: Verify preflight
+        run: ./scripts/gcp-live.sh preflight staging
+      - name: Create or verify state storage
+        env:
+          CI: "true"
+          GCP_CONFIRMATION: CREATE STATE staging ${{ vars.GCP_STAGING_PROJECT_ID }}
+        run: ./scripts/gcp-live.sh bootstrap-state staging
+      - name: Apply reviewed bootstrap
+        env:
+          CI: "true"
+          GCP_CONFIRMATION: APPLY BOOTSTRAP staging ${{ inputs.commit_sha }}
+        run: ./scripts/gcp-live.sh apply-bootstrap staging
+      - name: Build immutable application image
+        run: ./scripts/gcp-live.sh build-image staging
+      - name: Deploy staging application
+        id: application
+        env:
+          CI: "true"
+          GCP_CONFIRMATION: DEPLOY staging ${{ inputs.commit_sha }}
+        run: |
+          ./scripts/gcp-live.sh deploy-staging
+          echo "hosting_url=https://$GCP_STAGING_PROJECT_ID.web.app" >> "$GITHUB_OUTPUT"
+      - name: Remove private deployment inputs
+        if: always()
+        run: rm -f "$GCP_TFVARS_FILE" "$GCP_CLIENT_ENV_FILE"

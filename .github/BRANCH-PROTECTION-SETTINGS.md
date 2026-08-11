@@ -78,6 +78,8 @@ These are the exact check names as they appear in the CI workflow
 - `security (tfscan)`
 - `integration`
 - `terraform-check`
+- `gcp-application`
+- `gcp-terraform`
 - `gcp-release-gate`
 
 > **Note on `security` matrix**: The `security` job uses a

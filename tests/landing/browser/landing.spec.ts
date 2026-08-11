@@ -2,7 +2,6 @@ import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 
 const contactUrl = 'https://www.constrovet.com/pages/contact.html?interest=challanse';
-const reviewerPortalUrl = 'https://review.challanse.constrovet.com/';
 const pageErrors = new WeakMap<object, { consoleErrors: string[]; failedRequests: string[] }>();
 
 test.beforeEach(async ({ page }) => {
@@ -20,12 +19,6 @@ test.beforeEach(async ({ page }) => {
       body: `<label for="interest">Review interest</label><select id="interest"><option${interest === 'challanse' ? ' selected' : ''}>ChallanSe pilot</option></select>`,
     });
   });
-  await page.route(reviewerPortalUrl, async route => {
-    await route.fulfill({
-      contentType: 'text/html',
-      body: '<h1>Cloudflare Access one-time PIN</h1>',
-    });
-  });
   await page.goto('/');
   await expect(page.locator('#cv-nav-placeholder nav')).toBeVisible();
 });
@@ -37,17 +30,12 @@ test.afterEach(async ({ page }) => {
   await expect(page.locator('button[aria-hidden="true"]:visible, a[aria-hidden="true"]:visible, input[aria-hidden="true"]:visible')).toHaveCount(0);
 });
 
-test('desktop navigation exposes registered-client sign in', async ({ page, isMobile }) => {
+test('desktop navigation reports that the client service is not yet live', async ({ page, isMobile }) => {
   test.skip(isMobile, 'Desktop navigation is hidden on mobile.');
-  const pilotLink = page.locator('.cv-nav__links .cv-nav__cta');
-  await expect(pilotLink).toHaveAttribute('href', reviewerPortalUrl);
-  expect(await pilotLink.getAttribute('data-pilot-request')).toBeNull();
-  await pilotLink.click();
-  await expect(page).toHaveURL(reviewerPortalUrl);
-  await expect(page.getByRole('heading', { name: 'Cloudflare Access one-time PIN' })).toBeVisible();
+  await expect(page.locator('.cv-nav__links .cv-nav__cta')).toHaveText('Client service launching soon');
 });
 
-test('mobile menu reports state, closes with Escape, and exposes client sign in', async ({ page, isMobile }) => {
+test('mobile menu reports state, closes with Escape, and reports client launch status', async ({ page, isMobile }) => {
   test.skip(!isMobile, 'Mobile drawer is hidden on desktop.');
   const menu = page.locator('#cv-hamburger');
   const drawer = page.locator('#cv-drawer');
@@ -60,13 +48,7 @@ test('mobile menu reports state, closes with Escape, and exposes client sign in'
   await expect(menu).toHaveAttribute('aria-expanded', 'false');
   await expect(menu).toBeFocused();
   await menu.click();
-  const pilotLink = drawer.locator('.cv-nav__cta');
-  await expect(pilotLink).toHaveAttribute('href', reviewerPortalUrl);
-  await pilotLink.focus();
-  await expect(pilotLink).toBeFocused();
-  await pilotLink.click();
-  await expect(page).toHaveURL(reviewerPortalUrl);
-  await expect(page.getByRole('heading', { name: 'Cloudflare Access one-time PIN' })).toBeVisible();
+  await expect(drawer.locator('.cv-nav__cta')).toHaveText('Client service launching soon');
 });
 
 test('workflow tabs work by click and keyboard with one visible panel', async ({ page }) => {
@@ -98,10 +80,9 @@ test('anonymous visitor completes the fictional invoice demonstration', async ({
   await expect(page.locator('.cs-sample__notice')).toContainText('stores nothing');
 });
 
-test('unfinished guest processing is replaced by registered-client sign in', async ({ page }) => {
-  const control = page.getByRole('link', { name: 'Client Sign In' }).first();
-  await expect(control).toHaveAttribute('href', 'https://review.challanse.constrovet.com/');
-  await expect(page.getByRole('link', { name: 'Process My Invoice' })).toHaveCount(0);
+test('unreleased client processing has no dead public link', async ({ page }) => {
+  await expect(page.locator('.cs-hero__actions').getByText('Client service launching soon')).toBeVisible();
+  await expect(page.getByRole('link', { name: /Client/ })).toHaveCount(0);
 });
 
 test('landing has no serious accessibility violations', async ({ page }) => {

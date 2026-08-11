@@ -31,14 +31,14 @@ export function addPilotRequestTrigger(markup) {
   );
 }
 
-export function configureGuestControls(markup, enabled, guestUrl, reviewerUrl) {
-  const href = escapeHtmlAttribute(enabled ? guestUrl : reviewerUrl);
-  const label = enabled ? 'Process My Invoice' : 'Client Sign In';
+export function configureClientControls(markup, enabled, appUrl) {
+  const href = escapeHtmlAttribute(appUrl);
   return markup.replace(
     /<a([^>]*)\sdata-guest-processing([^>]*)>(Process My Invoice|Client Sign In)<\/a>/g,
     (_match, before, after) => {
       const attributes = `${before}${after}`.replace(/\s+href=(?:"[^"]*"|'[^']*')/g, '').trim();
-      return `<a${attributes ? ` ${attributes}` : ''} href="${href}">${label}</a>`;
+      if (enabled) return `<a${attributes ? ` ${attributes}` : ''} href="${href}">Client Sign Up / Sign In</a>`;
+      return `<span${attributes ? ` ${attributes}` : ''} role="status" aria-disabled="true">Client service launching soon</span>`;
     }
   );
 }

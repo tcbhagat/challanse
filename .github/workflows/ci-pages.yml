@@ -30,6 +30,7 @@ jobs:
       - run: npm run test:landing
       - run: npx playwright install --with-deps chromium firefox
       - run: npm run test:landing:browser
+      - run: npm run test:client:browser
       - run: bash scripts/test-edge-integration.sh
       - run: bash scripts/test-production-config.sh
       - name: Run landing Lighthouse gate
@@ -370,6 +371,8 @@ jobs:
         env:
           CHALLANSE_PILOT_REQUESTS_ENABLED: "false"
           CHALLANSE_CONTACT_URL: https://www.constrovet.com/pages/contact.html?interest=challanse
+          CHALLANSE_CLIENT_APP_ENABLED: "false"
+          CHALLANSE_CLIENT_APP_URL: https://app.challanse.constrovet.com/
           CHALLANSE_CUSTOM_DOMAIN: challanse.constrovet.com
       - name: Copy CNAME into Pages artifact
         run: cp CNAME dist/landing/CNAME

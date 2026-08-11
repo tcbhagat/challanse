@@ -13,6 +13,16 @@ project_id() { local name="GCP_${ENVIRONMENT^^}_PROJECT_ID"; printf '%s' "${!nam
 state_bucket() { local name="GCP_${ENVIRONMENT^^}_TERRAFORM_STATE_BUCKET"; printf '%s' "${!name:-}"; }
 image_record() { printf '/tmp/challanse-gcp-%s-image.txt' "$ENVIRONMENT"; }
 
+confirm_exact() {
+  local expected="$1" provided="${GCP_CONFIRMATION:-}"
+  if test -n "$provided"; then
+    test "${CI:-false}" = "true" || fail "GCP_CONFIRMATION is accepted only in CI."
+  else
+    read -r -p "Type ${expected}: " provided
+  fi
+  test "$provided" = "$expected" || fail "Confirmation did not match."
+}
+
 assert_environment() {
   [[ "$ENVIRONMENT" =~ ^(staging|production)$ ]] || fail "Environment must be staging or production."
 }
@@ -58,7 +68,7 @@ init_backend() {
 
 bootstrap_state() {
   preflight
-  local project bucket phrase
+  local project bucket
   project="$(project_id)"
   bucket="$(state_bucket)"
   if gcloud storage buckets describe "gs://$bucket" --project "$project" >/dev/null 2>&1; then
@@ -66,8 +76,7 @@ bootstrap_state() {
     printf 'Verified existing Terraform state bucket: gs://%s\n' "$bucket"
     return
   fi
-  read -r -p "Type CREATE STATE ${ENVIRONMENT} ${project}: " phrase
-  test "$phrase" = "CREATE STATE ${ENVIRONMENT} ${project}" || fail "Confirmation did not match."
+  confirm_exact "CREATE STATE ${ENVIRONMENT} ${project}"
   gcloud storage buckets create "gs://$bucket" --project "$project" --location "$REGION" --uniform-bucket-level-access --public-access-prevention
   gcloud storage buckets update "gs://$bucket" --project "$project" --versioning
   verify_state_bucket "$project" "$bucket"
@@ -102,10 +111,9 @@ plan_bootstrap() {
 apply_bootstrap() {
   require_clean
   plan_bootstrap
-  local sha phrase
+  local sha
   sha="$(git -C "$ROOT" rev-parse HEAD)"
-  read -r -p "Type APPLY BOOTSTRAP ${ENVIRONMENT} ${sha}: " phrase
-  test "$phrase" = "APPLY BOOTSTRAP ${ENVIRONMENT} ${sha}" || fail "Confirmation did not match."
+  confirm_exact "APPLY BOOTSTRAP ${ENVIRONMENT} ${sha}"
   terraform -chdir="$ROOT/infra/gcp" apply "/tmp/challanse-${ENVIRONMENT}-bootstrap.tfplan"
 }
 
@@ -179,7 +187,7 @@ load_client_environment() {
 deploy_application() {
   require_clean
   plan_application
-  local sha phrase project
+  local sha project
   sha="$(git -C "$ROOT" rev-parse HEAD)"
   project="$(project_id)"
   require_ci_success "$sha"
@@ -187,8 +195,7 @@ deploy_application() {
     test "${GCP_PRODUCTION_APPROVED:-false}" = "true" || fail "Production approval evidence is missing."
     test "$(git -C "$ROOT" branch --show-current)" = "main" || fail "Production deploys only from main."
   fi
-  read -r -p "Type DEPLOY ${ENVIRONMENT} ${sha}: " phrase
-  test "$phrase" = "DEPLOY ${ENVIRONMENT} ${sha}" || fail "Confirmation did not match."
+  confirm_exact "DEPLOY ${ENVIRONMENT} ${sha}"
   terraform -chdir="$ROOT/infra/gcp" apply "/tmp/challanse-${ENVIRONMENT}-application.tfplan"
   load_client_environment
   npm --prefix "$ROOT" run build --workspace @challanse/client
