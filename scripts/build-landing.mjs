@@ -1,7 +1,7 @@
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { addPilotRequestTrigger, configureGuestControls, replacePilotControls } from './landing-build-utils.mjs';
+import { addPilotRequestTrigger, configureClientControls, replacePilotControls } from './landing-build-utils.mjs';
 
 const root = process.cwd();
 const output = path.join(root, 'dist', 'landing');
@@ -24,9 +24,8 @@ try {
 const apiBaseUrl = process.env.CHALLANSE_API_BASE_URL || '__API_BASE_URL__';
 const turnstileSiteKey = process.env.TURNSTILE_SITE_KEY || '__TURNSTILE_SITE_KEY__';
 const pilotRequestsEnabled = process.env.CHALLANSE_PILOT_REQUESTS_ENABLED === 'true';
-const guestProcessingEnabled = process.env.CHALLANSE_GUEST_PROCESSING_ENABLED === 'true';
-const guestUrl = process.env.CHALLANSE_GUEST_URL || 'https://guest.challanse.constrovet.com/';
-const reviewerUrl = process.env.CHALLANSE_REVIEWER_URL || 'https://review.challanse.constrovet.com/';
+const clientAppEnabled = process.env.CHALLANSE_CLIENT_APP_ENABLED === 'true';
+const clientAppUrl = process.env.CHALLANSE_CLIENT_APP_URL || 'https://app.challanse.constrovet.com/';
 const contactUrl =
   process.env.CHALLANSE_CONTACT_URL || 'https://www.constrovet.com/pages/contact.html?interest=challanse';
 
@@ -47,11 +46,12 @@ await writeFile(runtimePath, runtime);
 
 /* Inject cache-bust hash into the output index.html */
 const htmlPath = path.join(output, 'index.html');
-let html = configureGuestControls(
-  (await readFile(htmlPath, 'utf8')).replace(/__CACHE_BUST__/g, cacheBust),
-  guestProcessingEnabled,
-  guestUrl,
-  reviewerUrl
+let html = (await readFile(htmlPath, 'utf8')).replace(/__CACHE_BUST__/g, cacheBust);
+if (pilotRequestsEnabled) html = addPilotRequestTrigger(html);
+html = configureClientControls(
+  html,
+  clientAppEnabled,
+  clientAppUrl
 );
 if (!pilotRequestsEnabled) {
   html = replacePilotControls(html, contactUrl)
@@ -60,17 +60,14 @@ if (!pilotRequestsEnabled) {
       /\n\s*<script src="https:\/\/challenges\.cloudflare\.com\/turnstile\/v0\/api\.js\?render=explicit" async defer><\/script>/,
       ''
     );
-} else {
-  html = addPilotRequestTrigger(html);
 }
 await writeFile(htmlPath, html);
 
 const navigationPath = path.join(output, 'assets', 'nav.html');
-let navigation = configureGuestControls(
+let navigation = configureClientControls(
   await readFile(navigationPath, 'utf8'),
-  guestProcessingEnabled,
-  guestUrl,
-  reviewerUrl
+  clientAppEnabled,
+  clientAppUrl
 );
 if (!pilotRequestsEnabled) navigation = replacePilotControls(navigation, contactUrl);
 await writeFile(navigationPath, navigation);

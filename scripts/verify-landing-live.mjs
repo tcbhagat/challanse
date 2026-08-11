@@ -2,7 +2,6 @@ import process from 'node:process';
 
 const expectedCommit = process.argv[2];
 const publicUrl = 'https://challanse.constrovet.com/';
-const reviewerUrl = 'https://review.challanse.constrovet.com/';
 
 if (!/^[0-9a-f]{7,40}$/i.test(expectedCommit || '')) {
   throw new Error('Usage: node scripts/verify-landing-live.mjs <expected-commit-sha>');
@@ -46,8 +45,8 @@ for (const [name, markup] of [['landing', page], ['navigation', navigationResult
   if (markup.includes('data-pilot-request')) {
     throw new Error(`${name} contains an inert pilot control.`);
   }
-  if (!markup.includes(`href="${reviewerUrl}"`) || !markup.includes('>Client Sign In</a>')) {
-    throw new Error(`${name} has no valid registered-client destination.`);
+  if (!markup.includes('Client service launching soon') || markup.includes('href="https://app.challanse.constrovet.com/"')) {
+    throw new Error(`${name} does not fail closed while the client application is unavailable.`);
   }
 }
 

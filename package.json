@@ -14,6 +14,7 @@
     "test:browser": "playwright test",
     "test:landing": "node --test tests/landing/build-output.test.mjs",
     "test:landing:browser": "playwright test --config playwright.landing.config.ts",
+    "test:client:browser": "playwright test --config playwright.client.config.ts",
     "verify:landing:live": "node scripts/verify-landing-live.mjs",
     "test:enrichment": "PYTHONPATH=services/enrichment python3 -m pytest -q services/enrichment/tests",
     "test:gcp": "PYTHONPATH=services/gcp-api python3 -m pytest -q services/gcp-api/tests",

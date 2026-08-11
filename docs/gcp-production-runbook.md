@@ -66,6 +66,23 @@ The image phase builds the pinned OCR container only after Artifact Registry exi
 
 Billing defaults to disabled, so empty Razorpay secret containers do not block the free staging deployment. After KYC and legal approval, add secret versions through protected stdin or the Console, set `GCP_BILLING_ENABLED=true`, and rerun the application plan. Never place secret values in `.tfvars`, shell arguments or Git.
 
+### Protected GitHub staging workflow
+
+Create a `gcp-staging` GitHub environment restricted to protected `main`, then configure these environment variables:
+
+- `GCP_STAGING_PROJECT_ID`
+- `GCP_STAGING_TERRAFORM_STATE_BUCKET`
+- `GCP_STAGING_WORKLOAD_IDENTITY_PROVIDER`
+- `GCP_STAGING_DEPLOY_SERVICE_ACCOUNT`
+- `GCP_STAGING_FIREBASE_API_KEY`
+- `GCP_STAGING_FIREBASE_AUTH_DOMAIN`
+- `GCP_STAGING_FIREBASE_APP_ID`
+- `GCP_STAGING_APP_CHECK_SITE_KEY`
+
+Configure `GCP_BILLING_ACCOUNT_ID` as an environment secret. It identifies the billing account but is never committed or printed. The deploy service account must be reached through Workload Identity Federation; do not create a JSON service-account key.
+
+Dispatch `.github/workflows/gcp-staging.yml` only from a green protected `main` commit. Enter the full commit SHA and the exact confirmation `DEPLOY STAGING <full-sha>`. The workflow keeps application billing disabled, pins Terraform and Firebase CLI versions, builds an immutable container digest, and leaves production untouched.
+
 ## Staging Acceptance
 
 - Test Google and verified email/password sign-in.

@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { addPilotRequestTrigger, configureGuestControls, escapeHtmlAttribute, replacePilotControls } from '../../scripts/landing-build-utils.mjs';
+import { addPilotRequestTrigger, configureClientControls, escapeHtmlAttribute, replacePilotControls } from '../../scripts/landing-build-utils.mjs';
 
-const guestUrl = 'https://guest.challanse.constrovet.com/';
-const reviewerUrl = 'https://review.challanse.constrovet.com/';
+const appUrl = 'https://app.challanse.constrovet.com/';
 const contactUrl = 'https://www.constrovet.com/pages/contact.html?interest=challanse';
 const escapeRegExp = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -16,7 +15,8 @@ test('disabled landing output contains only released service links', async () =>
 
   for (const markup of [page, navigation]) {
     assert.equal(markup.includes('data-pilot-request'), false);
-    assert.equal(markup.includes(`href="${guestUrl}"`), false);
+    assert.equal(markup.includes(`href="${appUrl}"`), false);
+    assert.match(markup, /Client service launching soon/);
   }
   assert.equal(page.includes(`href="${contactUrl.replaceAll('&', '&amp;')}"`), true);
 });
@@ -45,10 +45,10 @@ test('landing tabs remain discoverable while inactive panels remain hidden', asy
   assert.match(page, /role="tabpanel"[^>]*aria-hidden="true"[^>]*hidden/);
 });
 
-test('guest controls remain gated until the private service is approved', () => {
+test('client controls remain gated until the application is approved', () => {
   const source = '<a class="cta" data-guest-processing href="ignored">Client Sign In</a>';
-  assert.equal(configureGuestControls(source, false, guestUrl, reviewerUrl), `<a class="cta" href="${reviewerUrl}">Client Sign In</a>`);
-  assert.equal(configureGuestControls(source, true, guestUrl, reviewerUrl), `<a class="cta" href="${guestUrl}">Process My Invoice</a>`);
+  assert.equal(configureClientControls(source, false, appUrl), '<span class="cta" role="status" aria-disabled="true">Client service launching soon</span>');
+  assert.equal(configureClientControls(source, true, appUrl), `<a class="cta" href="${appUrl}">Client Sign Up / Sign In</a>`);
 });
 
 test('landing exposes a browser-only sample journey and registered-client route', async () => {
@@ -60,6 +60,6 @@ test('landing exposes a browser-only sample journey and registered-client route'
   assert.match(page, /data-sample-view disabled>View Sample Result/);
   assert.match(page, />Try Another Sample</);
   assert.match(page, /This demonstration stays in your browser and stores nothing/);
-  assert.match(page, new RegExp(`href="${escapeRegExp(reviewerUrl)}">Client Sign In<\\/a>`));
+  assert.match(page, /Client service launching soon/);
   assert.doesNotMatch(page, /type="file"/);
 });
