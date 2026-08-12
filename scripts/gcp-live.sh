@@ -85,7 +85,7 @@ bootstrap_state() {
 
 verify_state_bucket() {
   local project="$1" bucket="$2" details expected_project_number
-  details="$(gcloud storage buckets describe "gs://$bucket" --project "$project" --format=json)"
+  details="$(gcloud storage buckets describe "gs://$bucket" --project "$project" --raw --format=json)"
   expected_project_number="$(gcloud projects describe "$project" --format='value(projectNumber)')"
   jq -e --arg region "${REGION^^}" --arg project_number "$expected_project_number" '
     (.location | ascii_upcase) == $region and

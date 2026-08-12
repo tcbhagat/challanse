@@ -21,6 +21,7 @@ test('GCP deployment CLI records immutable images and gates billing secrets', as
   assert.match(script, /@sha256:\[a-f0-9\]\{64\}/);
   assert.match(script, /check_billing_secrets/);
   assert.match(script, /verify_state_bucket/);
+  assert.match(script, /storage buckets describe[\s\S]*--raw --format=json/);
   assert.match(script, /require_ci_success/);
   assert.match(script, /Recorded image belongs to a different commit/);
   assert.match(script, /Recorded image belongs to a different GCP project/);
