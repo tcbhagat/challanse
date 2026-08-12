@@ -32,6 +32,10 @@ test('GCP deployment CLI records immutable images and gates billing secrets', as
 
 test('GCP infrastructure preserves task, retention, deletion, backup, and budget controls', async () => {
   const main = await read('infra/gcp/main.tf');
+  assert.equal(
+    (main.match(/depends_on = \[google_project_service\.required\["secretmanager\.googleapis\.com"\]\]/g) ?? []).length,
+    4,
+  );
   assert.match(main, /api_tasks_identity[\s\S]*roles\/iam\.serviceAccountUser/);
   assert.match(main, /billing-budget-notifications@system\.gserviceaccount\.com/);
   assert.match(main, /invoice_retention[\s\S]*expiresAt/);
