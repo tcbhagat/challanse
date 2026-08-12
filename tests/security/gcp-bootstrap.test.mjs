@@ -15,7 +15,7 @@ test('GCP Terraform separates bootstrap from application resources', async () =>
 });
 
 test('GCP deployment CLI records immutable images and gates billing secrets', async () => {
-  const script = await read('scripts/gcp-live.sh');
+  const [script, gitignore] = await Promise.all([read('scripts/gcp-live.sh'), read('.gitignore')]);
   assert.match(script, /bootstrap-state/);
   assert.match(script, /plan-bootstrap/);
   assert.match(script, /@sha256:\[a-f0-9\]\{64\}/);
@@ -27,6 +27,7 @@ test('GCP deployment CLI records immutable images and gates billing secrets', as
   assert.match(script, /Recorded image belongs to a different GCP project/);
   assert.match(script, /Production deploys only from main/);
   assert.doesNotMatch(script, /-auto-approve/);
+  assert.match(gitignore, /^\/gha-creds-\*\.json$/m);
 });
 
 test('GCP infrastructure preserves task, retention, deletion, backup, and budget controls', async () => {
