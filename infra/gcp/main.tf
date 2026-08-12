@@ -35,12 +35,6 @@ resource "google_pubsub_topic" "budget" {
   depends_on = [google_project_service.required]
 }
 
-resource "google_pubsub_topic_iam_member" "budget_publisher" {
-  topic  = google_pubsub_topic.budget.name
-  role   = "roles/pubsub.publisher"
-  member = "serviceAccount:billing-budget-notifications@system.gserviceaccount.com"
-}
-
 resource "google_billing_budget" "monthly" {
   billing_account = var.billing_account_id
   display_name    = "ChallanSe ${var.environment} monthly ceiling"

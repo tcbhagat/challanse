@@ -37,7 +37,7 @@ test('GCP infrastructure preserves task, retention, deletion, backup, and budget
     4,
   );
   assert.match(main, /api_tasks_identity[\s\S]*roles\/iam\.serviceAccountUser/);
-  assert.match(main, /billing-budget-notifications@system\.gserviceaccount\.com/);
+  assert.doesNotMatch(main, /billing-budget-notifications@system\.gserviceaccount\.com/);
   assert.match(main, /invoice_retention[\s\S]*expiresAt/);
   assert.match(main, /internal\/tasks\/backup/);
   assert.equal((main.match(/versioning \{ enabled = true \}/g) ?? []).length, 1);
