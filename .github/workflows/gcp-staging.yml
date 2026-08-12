@@ -33,8 +33,8 @@ jobs:
       GCP_BILLING_ENABLED: "false"
       GCP_STAGING_PROJECT_ID: ${{ vars.GCP_STAGING_PROJECT_ID }}
       GCP_STAGING_TERRAFORM_STATE_BUCKET: ${{ vars.GCP_STAGING_TERRAFORM_STATE_BUCKET }}
-      GCP_TFVARS_FILE: ${{ runner.temp }}/challanse-staging.tfvars
-      GCP_CLIENT_ENV_FILE: ${{ runner.temp }}/challanse-client-staging.env
+      GCP_TFVARS_FILE: /tmp/challanse-staging.tfvars
+      GCP_CLIENT_ENV_FILE: /tmp/challanse-client-staging.env
       TF_VAR_billing_account_id: ${{ secrets.GCP_BILLING_ACCOUNT_ID }}
       GH_TOKEN: ${{ github.token }}
     steps:
