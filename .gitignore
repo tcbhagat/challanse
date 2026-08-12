@@ -31,6 +31,6 @@ __pycache__/
 *.tfvars
 !.tfvars.example
 .firebase/
-gha-creds-*.json
+/gha-creds-*.json
 apps/client/.env*
 !apps/client/.env.example

@@ -27,7 +27,7 @@ test('GCP deployment CLI records immutable images and gates billing secrets', as
   assert.match(script, /Recorded image belongs to a different GCP project/);
   assert.match(script, /Production deploys only from main/);
   assert.doesNotMatch(script, /-auto-approve/);
-  assert.match(gitignore, /^gha-creds-\*\.json$/m);
+  assert.match(gitignore, /^\/gha-creds-\*\.json$/m);
 });
 
 test('GCP infrastructure preserves task, retention, deletion, backup, and budget controls', async () => {
