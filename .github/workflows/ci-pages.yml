@@ -260,7 +260,7 @@ jobs:
       migration: 0006_local_pilot.sql
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - uses: aws-actions/configure-aws-credentials@cabfdba3510de1431bac9dba27511d97497fc100 # v5
+      - uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
         with:
           role-to-assume: ${{ vars.AWS_PRODUCTION_TERRAFORM_ROLE_ARN }}
           aws-region: ap-south-1
