@@ -206,25 +206,29 @@ resource "google_storage_bucket_iam_member" "worker_backups" {
 }
 
 resource "google_secret_manager_secret" "razorpay_key_id" {
-  secret_id = "challanse-razorpay-key-id"
+  secret_id  = "challanse-razorpay-key-id"
+  depends_on = [google_project_service.required["secretmanager.googleapis.com"]]
   replication {
     auto {}
   }
 }
 resource "google_secret_manager_secret" "razorpay_key_secret" {
-  secret_id = "challanse-razorpay-key-secret"
+  secret_id  = "challanse-razorpay-key-secret"
+  depends_on = [google_project_service.required["secretmanager.googleapis.com"]]
   replication {
     auto {}
   }
 }
 resource "google_secret_manager_secret" "razorpay_plan_id" {
-  secret_id = "challanse-razorpay-plan-id"
+  secret_id  = "challanse-razorpay-plan-id"
+  depends_on = [google_project_service.required["secretmanager.googleapis.com"]]
   replication {
     auto {}
   }
 }
 resource "google_secret_manager_secret" "razorpay_webhook" {
-  secret_id = "challanse-razorpay-webhook-secret"
+  secret_id  = "challanse-razorpay-webhook-secret"
+  depends_on = [google_project_service.required["secretmanager.googleapis.com"]]
   replication {
     auto {}
   }
